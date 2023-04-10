@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <title>SignUp</title>
+    <link th:href="@{/css/bootstrap.min.css}"
+          href="../css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background: #007bff;
+            background: linear-gradient(to right, #0062E6, #33AEFF);
+        }
+
+        .card-img-left {
+            width: 45%;
+            /* Link to your background image using in the property below! */
+            background: scroll center url('https://source.unsplash.com/WEQbe2jBg40/414x512');
+            background-size: cover;
+        }
+
+        .btn-login {
+            font-size: 0.9rem;
+            letter-spacing: 0.05rem;
+            padding: 0.75rem 1rem;
+        }
+
+        .error-class {
+            border-width: thick;
+            color: #dc3545;
+            border-color: #dc3545;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="row">
+        <div class="col-lg-10 col-xl-9 mx-auto">
+            <div class="card flex-row my-5 border-0 shadow rounded-3 overflow-hidden">
+                <div class="card-img-left d-none d-md-flex">
+                    <!-- Background image for card set in CSS! -->
+                </div>
+                <div class="card-body p-4 p-sm-5">
+                    <h5 class="card-title text-center mb-5 fw-light fs-5">회원가입</h5>
+                    <form th:object="${user}" method="post" th:action>
+
+                        <div class="form-floating mb-3">
+                            <input type="text" class="form-control" id="name"
+                                   th:field="*{name}" th:errorclass="error-class" placeholder="myusername" required autofocus>
+                            <label for="name">이름</label>
+                            <div th:errors="*{name}" class="error-class">
+                                이름 검증 실패시 표시되는 태그
+                            </div>
+                        </div>
+
+                        <div class="form-floating mb-3">
+                            <input type="text" class="form-control" id="email"
+                                   th:field="*{email}" th:errorclass="error-class" placeholder="name@example.com">
+                            <label for="email">이메일</label>
+                            <div th:errors="*{email}" class="error-class">
+                                이메일 검증 실패시 표시되는 태그
+                            </div>
+                        </div>
+
+                        <hr>
+
+                        <div class="form-floating mb-3">
+                            <input type="password" class="form-control" id="password"
+                                   th:field="*{password}" th:errorclass="error-class" placeholder="Password">
+                            <label for="password">비밀번호</label>
+                            <div th:errors="*{password}" class="error-class">
+                                비밀번호 검증 실패시 표시되는 태그
+                            </div>
+                        </div>
+
+                        <div class="form-floating mb-3">
+                            <input type="password" class="form-control" id="confirmPassword"
+                                   th:field="*{confirmPassword}" th:errorclass="error-class" placeholder="Confirm Password">
+                            <label for="confirmPassword">비밀번호 확인</label>
+                            <div th:errors="*{confirmPassword}" class="error-class">
+                                비밀번호 일치 확인 검증 실패시 표시되는 태그
+                            </div>
+                        </div>
+
+                        <div class="d-grid mb-2">
+                            <button class="btn btn-lg btn-primary btn-login fw-bold text-uppercase" type="submit">회원가입</button>
+                        </div>
+
+                        <a class="d-block text-center mt-2 small" th:href="@{/}">로그인하러 가기</a>
+
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+</body>
+</html>

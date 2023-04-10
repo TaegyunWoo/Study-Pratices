@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <title>Home Page</title>
+    <link th:href="@{/css/bootstrap.min.css}"
+          href="../css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .login {
+            min-height: 100vh;
+        }
+
+        .bg-image {
+            background-image: url('https://source.unsplash.com/WEQbe2jBg40/600x1200');
+            background-size: cover;
+            background-position: center;
+        }
+
+        .login-heading {
+            font-weight: 300;
+        }
+
+        .btn-login {
+            font-size: 0.9rem;
+            letter-spacing: 0.05rem;
+            padding: 0.75rem 1rem;
+        }
+
+        .error-class {
+            border-width: thick;
+            color: #dc3545;
+            border-color: #dc3545;
+        }
+    </style>
+</head>
+<body>
+<div class="container-fluid ps-md-0">
+    <div class="row g-0">
+        <div class="d-none d-md-flex col-md-4 col-lg-6 bg-image"></div>
+        <div class="col-md-8 col-lg-6">
+            <div class="login d-flex align-items-center py-5">
+                <div class="container">
+                    <div class="row">
+                        <div class="col-md-9 col-lg-8 mx-auto">
+                            <h3 class="login-heading mb-4">Welcome!</h3>
+
+                            <!-- Sign In Form -->
+                            <form th:object="${user}" method="post" th:action>
+                                <div th:if="${#fields.hasGlobalErrors()}" class="error-class">
+                                    <p th:each="err : ${#fields.globalErrors()}" th:text="${err}">
+                                        글로벌 에러 텍스트
+                                    </p>
+                                </div>
+                                <div class="form-floating mb-3">
+                                    <input type="text" id="email" class="form-control" th:field="*{email}" th:errorclass="error-class" placeholder="name@example.com">
+                                    <label for="email">Email address</label>
+                                    <div th:errors="*{email}" th:errorclass="error-class">
+                                        아이디 오류 안내 텍스트
+                                    </div>
+                                </div>
+                                <div class="form-floating mb-3">
+                                    <input type="password" id="password" class="form-control" th:field="*{password}" th:errorclass="error-class" placeholder="Password">
+                                    <label id="password">Password</label>
+                                    <div th:errors="*{password}" th:errorclass="error-class">
+                                        비밀번호 오류 안내 텍스트
+                                    </div>
+                                </div>
+
+                                <div class="d-grid">
+                                    <button class="btn btn-lg btn-primary btn-login text-uppercase fw-bold mb-2" type="submit">로그인</button>
+                                    <button class="btn btn-lg btn-primary btn-login text-uppercase fw-bold mb-2" type="button" th:onclick="|location.href='@{/sign-up}'|">회원가입</button>
+                                    <button class="btn btn-lg btn-primary btn-login text-uppercase fw-bold mb-2" type="button" th:onclick="|location.href='@{/board/1}'|">게시판</button>
+                                </div>
+
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+</body>
+</html>

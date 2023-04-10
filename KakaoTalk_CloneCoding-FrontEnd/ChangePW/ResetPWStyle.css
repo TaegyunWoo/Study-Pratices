@@ -1,0 +1,31 @@
+body {
+    width: 500px;
+    height: 700px;
+    margin: 0 auto;
+    background-color: rgb(255, 235, 51);
+}
+
+h1 {
+    margin: 25% 0;
+    text-align: center;
+    font-weight: bold;
+}
+
+p {
+    width: 370px;
+    font-size: large;
+    margin-bottom: 10%;
+    float: left;
+}
+
+p > input {
+    float: right;
+    height: 20px;
+}
+
+input#processBtn {
+    text-align: center;
+    width: 10%;
+    height: 7%;
+    float: right;
+}

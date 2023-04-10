@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <title>Board Page</title>
+    <link th:href="@{/css/bootstrap.min.css}"
+          href="../css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+<!-- Page Content -->
+<div class="container">
+  <br/>
+  <th:block th:if="${#request.getAttribute('isLoginUser')}"> <!--/* 로그인된 사용자일 경우 */-->
+    <button type="button" class="btn-lg" th:onclick="|location.href='@{/logout}'|">로그아웃</button>
+    <button type="button" class="btn-lg" th:onclick="|location.href='@{/board/new-article}'|">글쓰기</button>
+  </th:block>
+  <th:block th:unless="${#request.getAttribute('isLoginUser')}"> <!--/* 로그인하지 않은 사용자일 경우 */-->
+    <button type="button" class="btn-lg" th:onclick="|location.href='@{/}'|">로그인</button>
+  </th:block>
+
+
+  <!-- Page Heading -->
+  <h1 class="my-4">게시판</h1>
+
+  <!-- Project One -->
+  <th:block th:each="article, articleStat : ${articleList}">
+    <div class="row">
+      <div class="col-md-5">
+        <h3 th:utext="${article.title}">게시글 제목</h3>
+        <p th:utext="${article.content}">게시글 본문</p>
+        <a class="btn btn-primary" th:href="|/board/article/|+${article.id}">게시글 보기</a>
+      </div>
+    </div>
+    <!-- /.row -->
+    <hr>
+  </th:block>
+
+  <!-- Pagination -->
+  <ul class="pagination justify-content-center">
+    <th:block th:each="num : ${totalPageNumArr}">
+      <li class="page-item">
+        <a class="page-link" th:href="|/board/${num}|" th:text="${num}">1</a>
+      </li>
+    </th:block>
+  </ul>
+
+</div>
+<!-- /.container -->
+</body>
+</html>

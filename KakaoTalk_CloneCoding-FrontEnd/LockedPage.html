@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8"/>
+    <title>잠금모드</title>
+    <link rel="stylesheet" href="LockedPageStyle.css">
+    <script src="LockedPageJS.js"></script>
+</head>
+<body>
+    <!--전체 프레임-->
+    <div id="frame">
+
+        <!--프로필-->
+        
+        <div id="profile">
+            <div id="profileImg">
+                <img src="images/profile.png"/>
+            </div>
+            <p>dnxp***@kakao.com</p>
+        </div>
+        <br/>
+        <p id="showStatus">잠금모드 상태입니다.</p>
+        <!--비밀번호입력-->
+        <form id="password">
+            <input type="password" id="pwField" placeholder="비밀번호"/><br/>
+            <input type="button" id="confirm" value="확인"/>
+        </form>
+        <div id="bottom">
+            <a href="ChangePW/ResetPW.html" id="resetPWLink">비밀번호 재설정</a>
+        </div>
+
+    </div>
+
+</body>
+</html>

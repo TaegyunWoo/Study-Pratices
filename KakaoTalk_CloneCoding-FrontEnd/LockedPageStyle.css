@@ -1,0 +1,61 @@
+body {
+    width: 500px;
+    height: 700px;
+    margin: 0 auto;
+    background-color: rgb(255, 235, 51);
+}
+
+div#frame {
+    margin-top: 25%;
+}
+
+div#profile > div#profileImg {
+    width: 90px;
+    height: 90px;
+    border-radius: 70%;
+    overflow: hidden;
+    margin: 0 auto;
+}
+
+div#profile > div#profileImg > img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+div#profile > p {
+    text-align: center;
+}
+
+p#showStatus {
+    text-align: center;
+    font-weight: bold;
+}
+
+form {
+    width: 260px;
+    height: 100px;
+    margin: 0 auto;
+}
+
+form > input {
+    width: 260px;
+    height: 40px;
+    margin-top: 10px;
+}
+
+form > input#confirm {
+    width: 270px;
+}
+
+div#bottom {
+    width: 150px;
+    text-align: center;
+    margin: 0 auto;
+    margin-top: 100px;
+}
+
+div#bottom > a {
+    text-decoration: none;
+    color: gray;
+}

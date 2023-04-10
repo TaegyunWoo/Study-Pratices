@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+  <meta charset="UTF-8">
+  <title>New Article</title>
+  <link th:href="@{/css/bootstrap.min.css}"
+        href="../css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body {
+      background: #007bff;
+      background: linear-gradient(to right, #0062E6, #33AEFF);
+    }
+    .error-class {
+      border-width: thick;
+      color: #dc3545;
+      border-color: #dc3545;
+    }
+  </style>
+</head>
+<body>
+<div class="container px-5 my-5">
+  <div class="row justify-content-center">
+    <div class="col-lg-8">
+      <div class="card border-0 rounded-3 shadow-lg">
+        <div class="card-body p-4">
+          <div class="text-center">
+            <div class="h1 fw-light">새글 작성하기</div>
+          </div>
+
+          <form th:object="${article}" method="post" th:action>
+
+            <!-- Name Input -->
+            <div class="form-floating mb-3">
+              <input class="form-control" id="title"
+                     th:field="*{title}" th:errorclass="error-class" type="text" placeholder="글 제목"/>
+              <label for="title">제목</label>
+              <div th:errors="*{title}">
+                제목 오류 메시지
+              </div>
+            </div>
+
+            <!-- Message Input -->
+            <div class="form-floating mb-3">
+              <textarea class="form-control" id="content" type="text"
+                        th:field="*{content}" th:errorclass="error-class" placeholder="본문" style="height: 10rem;"></textarea>
+              <label for="content">본문</label>
+              <div th:errors="*{content}">
+                본문 오류 메시지
+              </div>
+            </div>
+
+            <!-- Submit button -->
+            <div class="d-grid">
+              <button class="btn btn-primary btn-lg" type="submit">작성완료</button>
+            </div>
+          </form>
+          <!-- End of contact form -->
+
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

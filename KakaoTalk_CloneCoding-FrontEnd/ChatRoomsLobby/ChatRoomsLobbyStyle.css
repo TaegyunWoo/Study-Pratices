@@ -1,0 +1,94 @@
+body {
+    width: 500px;
+    height: 700px;
+    margin: 0 auto;
+    margin-top: 5%;
+    border-style: solid;
+    border-color: rgb(255, 235, 51);
+    border-width: thin;
+}
+
+#main {
+    display: grid;
+    grid-template-columns: 70px 1fr;
+}
+
+#menu {
+    background-color: rgb(206, 206, 206);
+    height: 700px;
+    border-style: inset;
+}
+
+img.menu.user {
+    margin-top: 45px;
+    width: 70px;
+}
+
+#chatList {
+    margin-left: 20px;
+}
+
+#menu > img.menu {
+    width: 40px;
+    height: 40px;
+    margin: 40px auto;
+    display: block;
+    cursor: pointer;
+}
+
+#chatHeader {
+    height: 50px;
+    margin-bottom: 20px;
+}
+
+#chatHeader > div.title {
+    float: left;
+    font-weight: bold;
+    font-size: 30px;
+    display: table-cell;
+}
+
+img.header.addChat {
+    cursor: pointer;
+}
+
+div.title > p {
+    display: table-cell;
+    cursor: pointer;
+}
+
+p#down {
+    font-size: 7px;
+    vertical-align: middle;
+}
+
+div#organizeMenu {
+    display: none;
+    border-style: solid;
+    border-width: thin;
+    position: absolute;
+    top: 130px;
+    left: 625px;
+    background-color: darkgray;
+    width: 170px;
+    
+}
+
+li {
+    font-size: 15px;
+    width: 140px;
+    margin: 0 auto;
+    margin-bottom: 10px;
+    cursor: pointer;
+}
+
+.header {
+    margin-top: 10px;
+}
+
+img.header {
+    width: 30px;
+    height: 30px;
+    margin-left: 15px;
+    float: right;
+}

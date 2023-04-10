@@ -1,0 +1,10 @@
+0:0:0:0:0:0:0:1 - - [03/Dec/2021:18:38:06 +0900] "GET / HTTP/1.1" 200 2042 http-bio-8080-exec-2 1030
+0:0:0:0:0:0:0:1 - - [03/Dec/2021:18:38:06 +0900] "GET /resources/css/jumbotron-narrow.css HTTP/1.1" 200 1411 http-bio-8080-exec-1 88
+0:0:0:0:0:0:0:1 - - [03/Dec/2021:18:38:06 +0900] "GET /resources/css/bootstrap.css HTTP/1.1" 200 119892 http-bio-8080-exec-3 115
+0:0:0:0:0:0:0:1 - - [03/Dec/2021:18:38:06 +0900] "GET /resources/js/bootstrap.min.js HTTP/1.1" 200 27726 http-bio-8080-exec-7 125
+0:0:0:0:0:0:0:1 - - [03/Dec/2021:18:38:07 +0900] "GET /resources/assets/js/jquery.js HTTP/1.1" 200 93106 http-bio-8080-exec-6 197
+0:0:0:0:0:0:0:1 - - [03/Dec/2021:18:38:07 +0900] "GET /resources/assets/ico/favicon.png HTTP/1.1" 200 889 http-bio-8080-exec-9 19
+0:0:0:0:0:0:0:1 - - [03/Dec/2021:18:38:18 +0900] "GET /members/new HTTP/1.1" 200 2308 http-bio-8080-exec-10 68
+0:0:0:0:0:0:0:1 - - [03/Dec/2021:18:38:21 +0900] "GET /members HTTP/1.1" 200 1896 http-bio-8080-exec-10 183
+0:0:0:0:0:0:0:1 - - [03/Dec/2021:18:38:26 +0900] "GET /orders HTTP/1.1" 200 3053 http-bio-8080-exec-10 621
+0:0:0:0:0:0:0:1 - - [03/Dec/2021:18:38:29 +0900] "GET /items HTTP/1.1" 200 2362 http-bio-8080-exec-10 99
