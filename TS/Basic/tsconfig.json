@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "target": "ESNext", //컴파일된 JS 버전
+    "module": "ESNext", //컴파일된 JS의 모듈 시스템 설정
+    "outDir": "dist", //컴파일된 JS 파일이 저장될 디렉토리
+    "strict": false, //TS 컴파일러의 타입 검사 엄격도
+    "moduleDetection": "force", //각 파일을 각기 다른 모듈로 판단 (기본값 : 서로 동일한 전역모듈로 판단)
+  },
+  "ts-node": {
+    "esm": true
+  },
+  "include": ["src"] //src 경로 이내의 모든 TS 파일을 한번에 컴파일
+}
