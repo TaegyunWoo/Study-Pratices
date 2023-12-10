@@ -6,4 +6,4 @@ type Animal = "dog" | "cat" | "chicken";
 type ColoredAnimal = "red-dog" | "red-cat" | "red-chicken"; //...;
 
 //해결: 템플릿 리터럴
-type ColoredAnimal1 = `${Color}-${Animal}` //모든 조합을 만족
+type ColoredAnimal1 = `${Color}-${Animal}`; //모든 조합을 만족
