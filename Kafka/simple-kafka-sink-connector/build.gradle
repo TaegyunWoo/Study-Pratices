@@ -1,0 +1,29 @@
+plugins {
+    id 'java'
+}
+
+group = 'org.example'
+version = '1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.apache.kafka:connect-api:3.5.1'
+    implementation 'org.slf4j:slf4j-simple:2.0.7'
+
+    testImplementation platform('org.junit:junit-bom:5.9.1')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+}
+
+test {
+    useJUnitPlatform()
+}
+
+// 빌드된 파일을 jar로 압축하기 위한 스크립트
+jar {
+    from {
+        configurations.compile.collate { it.isDirectory() ? it : zipTree(it) }
+    }
+}
