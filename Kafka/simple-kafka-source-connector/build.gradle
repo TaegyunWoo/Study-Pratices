@@ -20,3 +20,10 @@ dependencies {
 test {
     useJUnitPlatform()
 }
+
+// 빌드된 파일을 jar로 압축하기 위한 스크립트
+jar {
+    from {
+        configurations.compile.collate { it.isDirectory() ? it : zipTree(it) }
+    }
+}
