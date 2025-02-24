@@ -1,0 +1,30 @@
+spring:
+  mvc:
+    pathmatch:
+      matching-strategy: ant_path_matcher
+  application:
+    name: bestbookms
+  profiles:
+    active: default
+  data:
+    mongodb:
+      host: localhost
+      port: 27017
+      database: test
+  jpa:
+    hibernate:
+      ddl-auto: create
+    properties:
+      hibernate:
+        format_sql: true
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+server:
+  port: 8084
+
+logging:
+  level:
+    org.hibernate.SQL: debug
