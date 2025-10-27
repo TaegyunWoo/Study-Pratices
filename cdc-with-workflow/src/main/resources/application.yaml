@@ -1,0 +1,41 @@
+spring:
+  application:
+    name: kafka-cdc-demo
+
+  # 웹 서버 비활성화 (데이터 처리 모듈로만 동작)
+  main:
+    web-application-type: none
+
+  # JPA 자동 설정 비활성화 (데이터 처리 모듈로만 동작)
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+      - org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration
+
+  # Kafka Configuration (직렬화는 KafkaConfig에서 처리)
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: financial-cdc-consumer
+
+# Temporal Configuration
+temporal:
+  connection:
+    target: localhost:7233
+  namespace: default
+
+# Logging Configuration
+logging:
+  level:
+    com.lecture.cdc: INFO
+    org.springframework.kafka: WARN
+    org.apache.kafka: WARN
+    root: INFO
+
+# Custom Application Properties
+app:
+  kafka:
+    topics:
+      customers: financial.finance_app.customers
+      accounts: financial.finance_app.accounts
+      transactions: financial.finance_app.transactions
