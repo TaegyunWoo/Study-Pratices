@@ -128,3 +128,53 @@ public Job customerProcessingJob(JobRepository jobRepository, Step processStep) 
 ## 청크 지향 처리 반복 흐름도
 
 ![img.png](img/img1.png)
+
+
+
+# JobParameters
+
+---
+
+## JobParameters 란
+
+- `JobParameters`는 Spring Batch에서 배치 작업 실행 시 전달되는 매개변수 집합을 나타낸다.
+- **배치 작업 실행 시점**에 동적으로 값을 주입하여, 동일한 Job 을 다양한 상황에 맞게 실행할 수 있도록 한다.
+
+## 다양한 JobParameters 전달 방법
+
+### 커맨드라인에서 잡 파라미터 전달하기
+
+JobParameters는 커맨드라인에서 `key=value,type` 형식으로 전달할 수 있다.
+
+단, `type`은 생략 가능하며, 생략 시 기본적으로 `String` 타입으로 간주된다.
+
+> `key=valuye,type,identificationFlag` 형식도 지원되며, `identificationFlag`는 해당 파라미터가 Job 식별에 사용되는지 여부를 나타낸다. 기본값은 `true` 이다.
+> 자세한 내용은 추후 다룬다.
+
+```
+--spring.batch.job.name={jobName} {key1}={value1},{type1} {key2}={value2},{type2} ...
+```
+
+아래는 예시이다.
+
+```shell
+./gradlew bootRun --args='--spring.batch.job.name=dataProcessingJob inputFilePath=/data/input/users.csv,java.lang.String'
+```
+
+커맨드라인 문자열로 전달된 JobParameters는 Spring Batch의 `DefaultJobParametersConverter` 컴포넌트를 통해 적절한 타입으로 변환된다.
+
+자세한 내용은 [DefaultJobParametersConverter](https://docs.spring.io/spring-batch/docs/current/api/org/springframework/batch/core/converter/DefaultJobParametersConverter.html)와 [DefaultConversionService](https://docs.spring.io/spring-framework/docs/current/javadoc-api/org/springframework/core/convert/support/DefaultConversionService.html) 를 참고하자.
+
+### 기본 파라미터 표기법의 한계
+
+- 파라미터 값에 쉼표 문자가 포함된 경우, 기본 표기법으로는 이를 구분할 수 없다.
+- 예를 들어, `filePath=/data/input/file,name.csv,String` 와 같이 쉼표가 포함된 값을 전달하면, Spring Batch는 이를 `filePath` 키에 대한 값으로 올바르게 인식하지 못한다.
+- 이 경우, JSON 형식의 JobParameters를 사용할 수 있다.
+
+### JSON 형식으로 JobParameters 전달하기
+
+아래와 같은 형식으로 JSON 문자열을 사용하여 JobParameters를 전달할 수 있다.
+
+```
+key1='{ "value":"value1", "type":"java.lang.String", "identifying":true }' key2='{ "value":"value1", "type":"java.lang.String", "identifying":false }''
+```
