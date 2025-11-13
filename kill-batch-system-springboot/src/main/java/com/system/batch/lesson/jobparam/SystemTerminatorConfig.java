@@ -24,17 +24,18 @@ import java.time.format.DateTimeFormatter;
 @Configuration
 public class SystemTerminatorConfig {
     @Bean
-    public Job processTerminatorJob(JobRepository jobRepository, Step terminationStep) {
+    public Job processTerminatorJob(JobRepository jobRepository, Step terminationStep, SystemDestructionValidator systemDestructionValidator) {
         return new JobBuilder("processTerminatorJob", jobRepository)
-                .start(terminationStep)
-                .build();
+            .validator(systemDestructionValidator) //잡 파라미터 검증기 등록
+            .start(terminationStep)
+            .build();
     }
 
     @Bean
     public Step terminationStep(JobRepository jobRepository, PlatformTransactionManager platformTransactionManager, Tasklet terminatorTasklet5) {
         return new StepBuilder("termintationStep", jobRepository)
-                .tasklet(terminatorTasklet5, platformTransactionManager)
-                .build();
+            .tasklet(terminatorTasklet5, platformTransactionManager)
+            .build();
     }
 
     /**

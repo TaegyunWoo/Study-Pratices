@@ -178,3 +178,352 @@ JobParameters는 커맨드라인에서 `key=value,type` 형식으로 전달할 �
 ```
 key1='{ "value":"value1", "type":"java.lang.String", "identifying":true }' key2='{ "value":"value1", "type":"java.lang.String", "identifying":false }''
 ```
+
+## JobLauncherApplicationRunner
+
+### JobLauncherApplicationRunner 란?
+
+- JobLauncherApplicationRunner 는 Spring Boot 가 제공하는 ApplicationRunner의 한 종류이다.
+- 커맨드라인으로 전달된 Spring Batch 잡 파라미터를 해석하고 이를 바탕으로 실제 Job을 실행하는 역할을 수행한다.
+
+### JobLauncherApplicationRunner 가 수행하는 처리 과정
+
+1. Job 목록 준비
+    - Spring Boot에 의해 ApplicationContext에 등록된 모든 Job 타입 Bean이 JobLauncherApplicationRunner 에 자동 주입된다.
+2. 유효성 검증
+    - 만약 애플리케이션 컨텍스트에 Job 타입의 Bean 이 여러개인 경우 : `--spring.batch.job.name` 을 지정하지 않으면 검증 실패
+    - 만약 애플리케이션 컨텍스트에 Job 타입의 하나인 경우 : `--spring.batch.job.name` 생략 가능
+3. 명령어 해석
+    - 커맨드라인으로 전달된 값들을 파싱한다.
+    - DefaultJobParametersConverter 을 사용하여, `key=value` 형식의 인자들을 적절한 타입의 JobParameter 로 변환한다.
+4. Job 실행
+    - 1번에서 주입받은 Job 목록 중, `--spring.batch.job.name` 에 해당하는 Job을 찾는다.
+    - 해당 Job을 변환된 JobParameters 와 함께 실행한다.
+
+## Job Parameter 를 가져오는 방법
+
+### `@Value` 사용
+
+```java
+@Bean
+@StepScope //꼭 함께 사용해야함.
+public Tasklet terminatorTasklet1(
+    @Value("#{jobParameters['terminatorId']}") String terminatorId,
+    @Value("#{jobParameters['targetCount']}") Integer targetCount
+) { ... }
+```
+
+### Context 에서 가져오기
+
+```java
+@Component
+public class SystemDestructionTasklet implements Tasklet {
+    @Override
+    public RepeatStatus execute(StepContribution contribution, ChunkContext chunkContext) throws Exception {
+        //스텝 컨텍스트 객체로부터 가져온다.
+        JobParameters jobParameters = chunkContext.getStepContext()
+            .getStepExecution()
+            .getJobParameters();
+
+        String targetSystem = jobParameters.getString("system.target");
+        long desctructionLevel = jobParameters.getLong("system.destruction.level");
+     
+        //...
+    }
+}
+```
+## Job Parameter 값 검증
+
+### 직접 Validator 구현하는 방법
+
+#### 1. JobParametersValidator 구현
+
+```java
+@Component
+public class MyJobParametersValidator implements JobParametersValidator {
+    @Override
+    public void validate(JobParameters parameters) throws JobParametersInvalidException {
+        if (parameters.getLong("system.destruction.level") < 0) {
+            throw new JobParametersInvalidException("system.destruction.level must be greater than or equal to 0");
+        }
+    }
+}
+```
+
+#### 2. JobParametersValidator 를 Job에 등록
+
+```java
+@Bean
+public Job processTerminatorJob(JobRepository jobRepository, Step terminationStep, MyJobParametersValidator myJobParametersValidator) {
+    return new JobBuilder("processTerminatorJob", jobRepository)
+        .validator(systemDestructionValidator) //잡 파라미터 검증기 등록
+        .start(terminationStep)
+        .build();
+}
+```
+
+### 기본 Validator 사용
+
+Spring Batch 에서는 `DefaultJobParametersValidator` 이라는 기본 구현체를 제공한다.
+
+단순히 파라미터의 존재 여부만 확인하며 될 때는 이걸 사용하면 된다.
+
+#### 예시 코드
+
+```java
+@Bean
+public Job systemDestructionJob(
+    JobRepository jobRepository, 
+    Step systemDestructionStep
+) {
+    return new JobBuilder("systemDestructionJob", jobRepository)
+        .validator(new DefaultJobParametersValidator(
+            new String[]{"destructionPower", "other param1"},  // 필수 파라미터
+            new String[]{"targetSystem", "other param2"}       // 선택적 파라미터
+        ))
+        .start(systemDestructionStep)
+        .build();
+}
+```
+
+- `DefaultJobParametersValidator` 생성자의 첫번째 파라미터로 전달한 값이 필수 파라미터가 된다.
+- `DefaultJobParametersValidator` 생성자의 두번째 파라미터로 전달한 값이 선택적 파라미터가 된다.
+
+# Job 과 Step 의 Scope
+
+---
+
+일반적인 Spring 애플리케이션은 싱글톤 기본 스코프를 제공한다.
+
+하지만 Spring Batch 는 이와 다르게, **JobScope** 와 **StepScope** 를 제공한다.
+
+## JobScope 와 StepScope 의 라이프사이클
+
+- JobScope 와 StepScope 가 선언된 Bean 은 애플리케이션 구동 시점에서는 우선 프록시 객체로만 존재한다.
+- 그 후, Job 이나 Step 이 실행된 후에 프록시 객체에 접근을 시도하면 그때 실제 Bean 이 생성된다.
+
+아래는 전체적인 라이프사이클이다.
+
+![img.png](img/img2.png)
+
+## `@JobScope`
+
+`@JobScope` 는 Job이 실행될 때 실제 빈이 생성되고, Job이 종료될 때 함께 제거되는 스코프이다. 즉, JobExcution 과 생명주기를 같이 한다.
+
+```java
+@Bean
+@JobScope
+public Step systemDestructionStep(
+    @Value("#{jobParameters['destructionPower']}") Long destructionPower
+) {
+    return new StepBuilder("systemDestructionStep", jobRepository)
+        .tasklet((contribution, chunkContext) -> {
+            log.info("시스템 파괴 프로세스가 시작되었습니다. 파괴력: {}", destructionPower);
+            return RepeatStatus.FINISHED;
+        }, transactionManager)
+        .build();
+}
+```
+
+위 코드에 선언된 `@JobScope` 로 발생하는 효과는 아래와 같다.
+
+- **지연된 빈 생성 (Lazy Bean Creation)**
+  - `@JobScope` 가 적용된 빈은 애플리케이션 구동 시점에서 프록시 객체만 생성된다.
+  - 빈의 실제 인스턴스는 Job이 실행될 때 생성되고, Job이 종료되면 소멸한다.
+- **Job 파라미터와의 연동**
+  - 빈이 지연 생성되니, **애플리케이션 실행 중에 전달되는 JobParameters를 Job 실행 시점에 생성되는 `systemDestructionStep` 빈에 넣어줄 수 있게 된다.**
+- **병렬처리 지원**
+  - 여러 쓰레드가 "동일한 Job 정의"를 실행하더라도, 각각의 JobExecution 마다 서로 다른 `systemDestructionStep` 빈이 생성된다. 따라서 동시성 문제에 대해 안전해진다.
+
+아래 예시로 좀더 쉽게 이해될 것이다.
+
+### RestAPI로 요청을 받아서, 동적으로 Batch 를 실행하는 예시
+
+1. SpringMVC 와 SpringBatch 로 구현된 하나의 애플리케이션이 존재.
+2. 애플리케이션 실행
+3. `@JobScope` 가 적용된 Bean 은 즉시 초기화되는 것이 아니라, 프록시 상태로 존재하게 됨.
+   - 이 시점에서는 아직 JobParameter 를 전달받지 못했다. (RestAPI로 요청이 들어와야 알 수 있으므로)
+   - 따라서 `@Value` 로 전달받을 JobParameter 값을 아직 모르고, 그렇기 때문에 프록시 객체로 생성되어야 한다.
+4. 동시에 여러 요청 A, B가 들어왔고, 각각 다른 JobParameter 를 전달한다.
+   - 이 요청에 따라, 각 쓰레드는 서로 동일한 "Job 정의" 를 실행하여 각각의 JobExecution 이 동작한다.
+   - `@JobScope` 가 적용된 Bean 은 JobExecution 마다 생성/초기화되기 때문에 동시성 문제에서 자유롭다.
+
+## `@StepScope`
+
+`@StepScope` 는 `@JobScope` 와 동일한 방식으로 동작하지만, 적용 범위에 있어 차이가 있다.
+
+- `@JobScope` : Job 의 실행범위에서 빈을 관리한다.
+- `@StepScope` : Step 의 실행범위에서 빈을 관리한다.
+
+### 예시 코드
+
+```java
+@Bean
+public Step infiltrationStep(
+    JobRepository jobRepository,
+    PlatformTransactionManager transactionManager,
+    Tasklet systemInfiltrationTasklet
+) {
+    return new StepBuilder("infiltrationStep", jobRepository)
+        .tasklet(systemInfiltrationTasklet, transactionManager)
+        .build();
+}
+
+@Bean 
+@StepScope 
+public Tasklet systemInfiltrationTasklet(
+    @Value("#{jobParameters['infiltrationTargets']}") String infiltrationTargets
+) {
+    return (contribution, chunkContext) -> {
+        String[] targets = infiltrationTargets.split(",");
+        log.info("시스템 침투 시작");
+        log.info("주 타겟: {}", targets[0]);
+        log.info("보조 타겟: {}", targets[1]);
+        log.info("침투 완료");
+        return RepeatStatus.FINISHED;
+    };
+}
+```
+
+- `systemInfiltrationTasklet` 에 `@StepScope` 가 적용되어 있다. 이 Tasklet 빈이 Step 의 생명주기와 함께한다는 것을 알 수 있다.
+- 즉, 각각의 Step 마다 새로운 `systemInfiltrationTasklet` 이 생성되고, Step 이 종료될 때 함께 제거된다.
+- 만약 동시에 여러 Step이 실행되면서 `systemInfiltrationTasklet` 을 사용한다고 해도, `@StepScope` 가 있기 때문에 각 Step 실행마다 독립적인 Tasklet 인스턴스가 생성된다. 따라서 어떠한 동시성 이슈도 발생하지 않는다.
+
+## JobScope 와 StepScope 사용시 주의사항
+
+### 1. 프록시 대상의 타입이 클래스인 경우, 반드시 상속 가능한 클래스여야 한다.
+
+- `@JobScope` 와 `@StepScope` 모두 프록시 객체를 만들기 위해서, CGLIB 를 사용해 클래스 기반의 프록시를 생성한다.
+- 따라서 프록시 생성을 위해 반드시 상속 가능한 클래스여야 한다.
+
+### 2. Step 빈에는 `@StepScope` 와 `@JobScope` 를 사용하면 안된다.
+
+#### 2-1. Step 빈에 `@StepScope` 를 설정하는 경우
+
+```java
+@Bean
+@StepScope
+public Step systemDestructionStep(
+    SystemInfiltrationTasklet tasklet
+) {
+    return new StepBuilder("systemDestructionStep", jobRepository)
+        .tasklet(tasklet, transactionManager)
+        .build();
+}
+```
+
+- 위 코드를 보면 "Step 정의 빈"에 `@StepScope` 를 적용했다. 이 경우, 오류가 발생하게 된다.
+- 이유는 당연하다. 아직 Step 이 없는데, StepScope 를 찾으니 그렇다.
+
+![img.png](img/img3.png)
+
+#### 2-2. Step 빈에 `@JobScope` 를 설정하는 경우
+
+```java
+@Bean
+@JobScope  // Step에 @JobScope를 달았다
+public Step systemDestructionStep(
+   @Value("#{jobParameters['targetSystem']}") String targetSystem
+) {
+   return new StepBuilder("systemDestructionStep", jobRepository)
+       .tasklet((contribution, chunkContext) -> {
+           log.info("{} 시스템 침투 시작", targetSystem);
+           return RepeatStatus.FINISHED;
+       }, transactionManager)
+       .build();
+}
+```
+
+- 이번에는 "Step 정의 빈"에 `@JobScope` 를 적용했다. 이 경우, 실행시 오류가 발생하지는 않는다. (Job 실행 후, JobScope 를 찾았으므로)
+- 하지만 이 경우, 아래 상황에서 문제가 발생할 수 있다. (자세한 것은 추후 설명한다.)
+  - JobOperator를 통한 Step 실행 제어 시
+  - Spring Integration(Remote Partitioning)을 활용한 배치 확장 기능 사용 시
+- 따라서 위 코드를 아래와 같이 Tasklet 을 사용하도록 수정해야 한다.
+
+```java
+@Bean
+public Step systemDestructionStep(
+    SystemInfiltrationTasklet tasklet  // Tasklet을 주입받는다
+) {
+    return new StepBuilder("systemDestructionStep", jobRepository)
+        .tasklet(tasklet, transactionManager)
+        .build();
+}
+
+@Slf4j
+@Component
+@StepScope  // Tasklet에 @StepScope를 달았다
+public class SystemInfiltrationTasklet implements Tasklet {
+    private final String targetSystem;
+
+    public SystemInfiltrationTasklet(
+        @Value("#{jobParameters['targetSystem']}") String targetSystem
+    ) {
+        this.targetSystem = targetSystem;
+    }
+
+    @Override
+    public RepeatStatus execute(StepContribution contribution, ChunkContext context) {
+        log.info("{} 시스템 침투 시작", targetSystem);
+        return RepeatStatus.FINISHED;
+    }
+}
+```
+
+## 컴파일 시점에 없는 Job Parameter 값을 참조하는 방법
+
+JobBuilder 빈에서 StepBuilder 빈을 참조할 때, 아래와 같이 처리할 수 있다.
+
+```java
+// 1. 빈 주입 방식
+@Bean
+public Job systemTerminationJob(Step systemDestructionStep) {  // Spring이 주입
+    return new JobBuilder("systemTerminationJob", jobRepository)
+            .start(systemDestructionStep)
+            .build();
+}
+
+// 2. 메서드 직접 호출 방식
+@Bean
+public Job systemTerminationJob() {
+    return new JobBuilder("systemTerminationJob", jobRepository)
+            .start(systemDestructionStep(null))  // Job 파라미터 자리에 null 전달
+            .build();
+}
+```
+
+null을 전달하여 당장의 코드 레벨에서의 참조를 만족시키면, 실제 값은 Job이 실행될 때 입력받은 JobParameters의 값으로 주입된다.
+
+## JobScope 와 StepScope 빈에서 ExecutionContext 의 데이터에 접근하는 방법
+
+### ExecutionContext 란?
+
+- 비즈니스 로직 처리 중에 발생하는 커스텀 데이터를 관리할 방법이 필요한데, 이때 사용하는 것이 바로 ExecutionContext라는 데이터 컨테이너다.
+- ExecutionContext를 활용하면 커스텀 컬렉션의 마지막 처리 인덱스나 집계 중간 결과물 같은 데이터를 저장할 수 있다.
+- 이는 Job이 중단된 후 재시작할 때 특히 유용하다. Spring Batch가 재시작 시 ExecutionContext의 데이터를 자동으로 복원하므로, 중단된 지점부터 처리를 이어갈 수 있기 때문이다.
+- ExecutionContext도 메타데이터 저장소에서 관리하여, 안전하게 보존된다.
+
+### ExecutionContext 에서 데이터 꺼내기
+
+```java
+@Bean
+@JobScope  
+public Tasklet systemDestructionTasklet(
+  @Value("#{jobExecutionContext['previousSystemState']}") String prevState
+) {
+  // JobExecution의 ExecutionContext에서 이전 시스템 상태를 주입받는다
+}
+
+@Bean
+@StepScope
+public Tasklet infiltrationTasklet(
+  @Value("#{stepExecutionContext['targetSystemStatus']}") String targetStatus
+) {
+  // StepExecution의 ExecutionContext에서 타겟 시스템 상태를 주입받는다
+}
+```
+
+위 코드의 `jobExecutionContext`와 `stepExecutionContext` 는 각각 다른 범위를 가진다.
+
+- `@JobScope` 에서 가져온 ExecutionContext : Job에 속한 모든 컴포넌트(Step, Tasklet 등등...)에서 `@Value("#{jobExecutionContext['key']}")` 로 접근할 수 있다.
+- `@StepScope` 에서 가져온 ExecutionContext : 해당 Step에 속한 컴포넌트에서만 접근할 수 있다.
