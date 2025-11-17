@@ -18,10 +18,6 @@ public class ZombieProcessCleanupTasklet implements Tasklet {
      *
      * - 단순 반복문으로 처리 : 거대한 하나의 트랜잭션
      * - Tasklet의 execute 메서드로 처리 : 여러 개의 작은 트랜잭션
-     * @param contribution
-     * @param chunkContext
-     * @return
-     * @throws Exception
      */
     @Override
     public RepeatStatus execute(StepContribution contribution, ChunkContext chunkContext) throws Exception {
