@@ -527,3 +527,101 @@ public Tasklet infiltrationTasklet(
 
 - `@JobScope` 에서 가져온 ExecutionContext : Job에 속한 모든 컴포넌트(Step, Tasklet 등등...)에서 `@Value("#{jobExecutionContext['key']}")` 로 접근할 수 있다.
 - `@StepScope` 에서 가져온 ExecutionContext : 해당 Step에 속한 컴포넌트에서만 접근할 수 있다.
+
+# 파일 기반 배치 처리
+
+---
+
+## FlatFileItemReader 와 FlatFileItemWriter
+
+파일 기반 배치 처리의 기본적인 Reader/Writer 는 FlatFileItemReader 와 FlatFileItemWriter 이다.
+
+### FlatFile 이란?
+
+먼저 FlatFile 이란 아래와 같다.
+
+- CSV 파일처럼 단순하게 행열로 구성된 파일이다.
+- 각 라인이 하나의 데이터이다.
+- 다양한 구분자를 지원한다. (`,` , `\t` 등)
+- 강력한 호환성과 범용성
+
+### FlatFileItemReader
+
+FlatFileItemReader 는 플랫 파일로부터 데이터를 읽어오는 기본적인 Reader 이다.
+
+#### `FlatFileItemReader.doRead()`
+
+- 파일에서 한 줄을 읽어온다.
+- 읽어온 한 줄의 문자열을 우리가 사용할 객체로 변환해 리턴한다. 
+
+아래는 `doRead()` 함수의 예시 코드이다.
+
+```java
+...
+String line = readLine(); // 한 줄의 데이터를 읽어온다.
+...
+// 문자열을 도메인 객체로 변환해 리턴한다. 
+return lineMapper.mapLine(line, lineCount); 
+```
+
+`doRead()` 는 읽어들인 문자열을 `lineMapper.mapLine()` 로 도메인 객체로 변환하게 된다.
+
+SpringBatch 는 LineMapper 인터페이스의 기본적인 구현체 `DefaultLineMapper` 를 제공한다.
+
+#### 문자열을 쪼개서 도메인 객체로 매핑하기: `DefaultLineMapper`
+
+`DefaultLineMapper` 의 동작은 크게 두 단계로 나뉜다.
+
+1. 문자열 라인 토큰화
+    - e.g) `a,b,c,d` 처럼 구성된 문자열을 쉼표를 기준으로 나눠, `a` , `b` , `c` , `d` 로 토큰화한다.
+2. 분리된 각 토큰들을 도메인 객체의 프로퍼티에 매핑한다.
+
+`DefaultLineMapper.mapLine()` 은 아래와 같이 구현되어 있다.
+
+```java
+// DefaultLineMapper.java
+@Override
+public T mapLine(String line, int lineNumber) throws Exception {
+    FieldSet fieldSet = tokenizer.tokenize(line);  // 1단계: 문자열을 토큰화해 FieldSet 반환
+    return fieldSetMapper.mapFieldSet(fieldSet);  // 2단계: FieldSet을 객체로 매핑	 
+}
+```
+
+- `tokenizer.tokenize(line)`
+  - LineTokenizer 구현체의 메서드 `tokenize()` 를 사용하여 문자열을 토큰화한다.
+  - LineTokenizer 는 대표적인 구현체로, `DelimitedLineTokenizer` 와 `FixedLengthTokenizer` 가 있다.
+  - `DelimitedLineTokenizer` : 쉼표 문자와 같은 구분자로 구분된 데이터를 토큰화한다.
+    - e.g) `ERR001,2024-01-19,CRITICAL` -> `["ERR001", "2024-01-19", "CRITICAL"]`
+  - `FixedLengthTokenizer` : 고정 길이로 구분된 데이터를 토큰화한다.
+    - e.g) `ERR00120240119CRITICAL` -> `["ERR001", "20240119", "CRITICAL"]` (각각 6자리, 8자리, 8자리)
+- `fieldSetMapper.mapFieldSet(fieldSet)`
+  - 해당 메서드를 통해서, 토큰화된 필드들을 객체에 매핑한다.
+  - 별도의 설정이 없다면, `BeanWrapperFieldSetMapper` 가 기본 FieldSetMapper 로 사용된다.
+  - `BeanWrapperFieldSetMapper` 는 자바 빈 규약을 따르는 객체에 데이터를 매핑한다. `setter` 메서드를 호출해서 데이터를 설정하게 된다.
+  - 매핑 예시
+    - ```java
+      /* FieldSet 데이터
+       * FieldSet {
+       * tokens: ["ERR001", "2024-01-19 10:15:23", "CRITICAL", "1234", "SYSTEM_CRASH"]
+       * names: ["errorId", "errorDateTime", "severity", "processId", "errorMessage"]
+       * }
+       */
+    
+      // 매핑될 객체
+      @Data     // setter 메서드 반드시 필요
+      public static class SystemFailure {
+      private String errorId;        // "ERR001" 매핑
+      private String errorDateTime;  // "2024-01-19 10:15:23" 매핑
+      private String severity;       // "CRITICAL" 매핑
+      private Integer processId;     // "1234" -> 1234로 타입 변환 후 매핑
+      private String errorMessage;   // "SYSTEM_CRASH" 매핑
+      }
+      ```
+
+#### FlatFileItemReader 원리 정리
+
+![img.png](img/img4.png)
+
+#### 예시코드
+
+[SystemFailureJobConfig](src/main/java/com/system/batch/lesson/flatfileitemreader/SystemFailureJobConfig.java)
