@@ -27,7 +27,7 @@ public class SystemDestructionConfig {
     }
 
     @Bean
-    public Step terminationStep(JobRepository jobRepository, PlatformTransactionManager transactionManager) {
+    public Step terminationStep1(JobRepository jobRepository, PlatformTransactionManager transactionManager) {
         return new StepBuilder("terminationStep", jobRepository)
                 .tasklet((contribution, chunkContext) -> {
                     log.info("시스템 제거 프로토콜 실행 중...");

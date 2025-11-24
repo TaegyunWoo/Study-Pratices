@@ -827,3 +827,31 @@ public void afterRead(Object item) {
 - 데이터베이스 연결, 파일 I/O, 외부 API 호출은 최소화
 - 리스너 내 로직은 가능한 한 가볍게 유지하라
 - 특히 Item 단위 리스너에서는 더욱 중요하다
+
+
+// FlatFileItemReader
+
+#### 고정 길이 형식의 파일 읽기
+
+```
+ERR001  2024-01-19 10:15:23  CRITICAL  1234  SYSTEM  CRASH DETECT \n
+ERR002  2024-01-19 10:15:25  FATAL     1235  MEMORY  OVERFLOW FAIL\n
+```
+
+위와 같이 단순히 고정 길이 형식의 파일을 읽어야 하는 경우, `FlatFileItemReader.fixedLength()` 를 사용할 수 있다.
+
+[예시코드](src/main/java/com/system/batch/lesson/flatfileitemreader/FixedLengthSystemFailureJobConfig.java)
+
+#### 정규식으로 파일 읽기
+
+```
+[WARNING][Thread-156][CPU: 78%] Thread pool saturation detected - 45/50 threads in use...
+[ERROR][Thread-157][CPU: 92%] Thread deadlock detected between Thread-157 and Thread-159
+[FATAL][Thread-159][CPU: 95%] Thread dump initiated - system unresponsive for 30s
+```
+
+위와 같이 정규식 패턴으로 파일을 읽어야 하는 경우, `RegexLineTokenizer` 를 사용할 수 있다.
+
+[예시코드](src/main/java/com/system/batch/lesson/flatfileitemreader/RegexSystemLogJobConfig.java)
+
+
