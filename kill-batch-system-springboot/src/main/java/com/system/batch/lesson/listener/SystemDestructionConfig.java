@@ -19,10 +19,10 @@ import org.springframework.transaction.PlatformTransactionManager;
 @Configuration
 public class SystemDestructionConfig {
     @Bean
-    public Job killDashNineJob(JobRepository jobRepository, Step terminationStep) {
+    public Job killDashNineJob(JobRepository jobRepository, Step terminationStep1) {
         return new JobBuilder("killDashNineJob", jobRepository)
                 .listener(systemTerminationListener(null))  // 파라미터는 런타임에 주입
-                .start(terminationStep)
+                .start(terminationStep1)
                 .build();
     }
 

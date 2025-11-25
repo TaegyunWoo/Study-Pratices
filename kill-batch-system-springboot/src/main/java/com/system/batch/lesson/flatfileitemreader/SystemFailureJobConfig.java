@@ -20,7 +20,7 @@ import org.springframework.core.io.FileSystemResource;
 import org.springframework.transaction.PlatformTransactionManager;
 
 @Slf4j
-@Configuration
+//@Configuration
 @RequiredArgsConstructor
 public class SystemFailureJobConfig {
     private final JobRepository jobRepository;

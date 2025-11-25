@@ -1,6 +1,7 @@
 package com.system.batch.lesson.flatfileitemreader;
 
 import lombok.Data;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
@@ -27,27 +28,26 @@ import java.time.format.DateTimeFormatter;
 import java.util.Map;
 
 @Slf4j
-@Configuration
+@RequiredArgsConstructor
+//@Configuration
 public class FixedLengthSystemFailureJobConfig {
-    @Autowired
-    private JobRepository jobRepository;
-    @Autowired
-    private PlatformTransactionManager transactionManager;
+    private final JobRepository jobRepository;
+    private final PlatformTransactionManager transactionManager;
 
     @Bean
-    public Job systemFailureJob(Step systemFailureStep) {
-        return new JobBuilder("systemFailureJob", jobRepository)
-                .start(systemFailureStep)
+    public Job fixedSystemFailureJob(Step fixedSystemFailureStep) {
+        return new JobBuilder("fixedSystemFailureJob", jobRepository)
+                .start(fixedSystemFailureStep)
                 .build();
     }
 
     @Bean
-    public Step systemFailureStep(
-            FlatFileItemReader<SystemFailure> systemFailureItemReader,
+    public Step fixedSystemFailureStep(
+            FlatFileItemReader<FixedSystemFailure> systemFailureItemReader,
             SystemFailureStdoutItemWriter systemFailureStdoutItemWriter
     ) {
-        return new StepBuilder("systemFailureStep", jobRepository)
-                .<SystemFailure, SystemFailure>chunk(10, transactionManager)
+        return new StepBuilder("fixedSystemFailureStep", jobRepository)
+                .<FixedSystemFailure, FixedSystemFailure>chunk(10, transactionManager)
                 .reader(systemFailureItemReader)
                 .writer(systemFailureStdoutItemWriter)
                 .build();
@@ -58,10 +58,10 @@ public class FixedLengthSystemFailureJobConfig {
      */
     @Bean
     @StepScope
-    public FlatFileItemReader<SystemFailure> systemFailureItemReader(
+    public FlatFileItemReader<FixedSystemFailure> fixedSystemFailureItemReader(
             @Value("#{jobParameters['inputFile']}") String inputFile) {
-        return new FlatFileItemReaderBuilder<SystemFailure>()
-                .name("systemFailureItemReader")
+        return new FlatFileItemReaderBuilder<FixedSystemFailure>()
+                .name("fixedSystemFailureItemReader")
                 .resource(new FileSystemResource(inputFile))
                 .fixedLength() //고정 길이 형식임을 알림
                 .columns(new Range[]{
@@ -75,7 +75,7 @@ public class FixedLengthSystemFailureJobConfig {
                         "severity",
                         "processId",
                         "errorMessage")
-                .targetType(SystemFailure.class)
+                .targetType(FixedSystemFailure.class)
                 .customEditors(Map.of(LocalDateTime.class, dateTimeEditor())) //커스텀 PropertyEditor 등록
                 .build();
     }
@@ -95,21 +95,21 @@ public class FixedLengthSystemFailureJobConfig {
     }
 
     @Bean
-    public SystemFailureStdoutItemWriter systemFailureStdoutItemWriter() {
+    public SystemFailureStdoutItemWriter fixedSystemFailureStdoutItemWriter() {
         return new SystemFailureStdoutItemWriter();
     }
 
-    public static class SystemFailureStdoutItemWriter implements ItemWriter<SystemFailure> {
+    public static class SystemFailureStdoutItemWriter implements ItemWriter<FixedSystemFailure> {
         @Override
-        public void write(Chunk<? extends SystemFailure> chunk) throws Exception {
-            for (SystemFailure failure : chunk) {
+        public void write(Chunk<? extends FixedSystemFailure> chunk) throws Exception {
+            for (FixedSystemFailure failure : chunk) {
                 log.info("Processing system failure: {}", failure);
             }
         }
     }
 
     @Data
-    public static class SystemFailure {
+    public static class FixedSystemFailure {
         private String errorId;
         private String errorDateTime;
         private String severity;

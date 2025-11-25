@@ -951,6 +951,90 @@ public T mapLine(String line, int lineNumber) throws Exception {
 
 ![img.png](img/img5.png)
 
-#### 예시코드
+#### 예시코드 1) 구분자로 토큰화해서 읽기
 
 [SystemFailureJobConfig](src/main/java/com/system/batch/lesson/flatfileitemreader/SystemFailureJobConfig.java)
+
+하기는 예시 파일
+
+```
+에러ID,발생시각,심각도,프로세스ID,에러메시지
+ERR001,2024-01-19 10:15:23,CRITICAL,1234,SYSTEM_CRASH
+ERR002,2024-01-19 10:15:25,FATAL,1235,MEMORY_OVERFLOW
+```
+
+#### 예시코드 2) 고정 길이로 토큰화해서 읽기
+
+[FixedLengthSystemFailureJobConfig](src/main/java/com/system/batch/lesson/flatfileitemreader/FixedLengthSystemFailureJobConfig.java)
+
+하기는 예시 파일
+
+```
+ERR001  2024-01-19 10:15:23  CRITICAL  1234  SYSTEM  CRASH DETECT \n
+ERR002  2024-01-19 10:15:25  FATAL     1235  MEMORY  OVERFLOW FAIL\n
+```
+
+> 공백문자는 단순히 자리 맞추기 용도로 사용됨.
+
+#### 예시코드 3) 정규식으로 토큰화해서 읽기
+
+[RegexSystemLogJobConfig](src/main/java/com/system/batch/lesson/flatfileitemreader/RegexSystemLogJobConfig.java)
+
+하기는 예시 파일
+
+```
+[WARNING][Thread-156][CPU: 78%] Thread pool saturation detected - 45/50 threads in use...
+[ERROR][Thread-157][CPU: 92%] Thread deadlock detected between Thread-157 and Thread-159
+[FATAL][Thread-159][CPU: 95%] Thread dump initiated - system unresponsive for 30s
+```
+
+#### 예시코드 4) 조건에 따라 다른 Tokenizer 와 FieldSetMapper 사용하기
+
+[PatternMatchingSystemFailureJobConfig](src/main/java/com/system/batch/lesson/flatfileitemreader/PatternMatchingSystemFailureJobConfig.java)
+
+하기는 예시 파일
+
+```
+ERROR,mysql-prod,OOM,2024-01-24T09:30:00,heap space killing spree,85%,/var/log/mysql
+ABORT,spring-batch,MemoryLeak,2024-01-24T10:15:30,forced termination,-1,/usr/apps/batch,TERMINATED
+COLLECT,heap-dump,PID-9012,2024-01-24T11:00:15,/tmp/heapdump
+ERROR,redis-cache,SocketTimeout,2024-01-24T13:45:00,connection timeout,92%,/var/log/redis
+ABORT,zombie-process,Deadlock,2024-01-24T13:46:20,kill -9 executed,-1,/proc/dead,TERMINATED
+```
+
+> 각 라인은 서로 다른 구조와 형식을 가지고 있다.
+> - ERROR: 장애 발생 이벤트 (시스템의 비정상 징후)
+>   - 형식: 타입,애플리케이션,장애유형,발생시각,메시지,리소스사용률,로그경로
+> - ABORT: 프로세스 중단 이벤트 (비정상 프로세스 제거)
+>   - 형식: 타입,애플리케이션,장애유형,중단시각,중단사유,종료코드,프로세스경로,상태
+> - COLLECT: 사후 분석 이벤트 (시스템 부검)
+>   - 형식: 타입,덤프종류,프로세스ID,수집시각,저장경로
+
+#### 예시코드 5) 여러 파일을 읽어서 배치 실행하기
+
+- MultiResourceItemReader 를 사용해서, 파일 A, 파일 B, ...를 순차적으로 읽어가며 chunk 처리할 수 있다.
+
+[MultiResourceSystemFailureJobConfig](src/main/java/com/system/batch/lesson/flatfileitemreader/MultiResourceSystemFailureJobConfig.java)
+
+#### 번외) Record 클래스 객체로 FieldSetMapper 적용하기
+
+```java
+@Bean
+@StepScope
+public FlatFileItemReader<SystemDeath> systemDeathReader(
+        @Value("#{jobParameters['inputFile']}") String inputFile) {
+    return new FlatFileItemReaderBuilder<SystemDeath>()
+            .name("systemKillReader")
+            .resource(new FileSystemResource(inputFile))
+            .delimited()
+            .names("command", "cpu", "status")
+            .targetType(SystemDeath.class) //Record 클래스를 넘기면 끝.
+            .linesToSkip(1)
+            .build();
+}
+
+public record SystemDeath(String command, int cpu, String status) {}
+```
+
+- `targetType()` 메서드의 매개변수로 Record 클래스가 넘어오면, Spring Batch 는 내부적으로 BeanWrapperFieldSetMapper 대신 **RecordFieldSetMapper**를 사용
+- RecordFieldSetMapper 은 setter 를 사용하는 것이 아니라, record 의 생성자를 사용해서 매핑한다.

@@ -21,7 +21,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
 @Slf4j
-@Configuration
+//@Configuration
 public class SystemTerminatorConfig {
     @Bean
     public Job processTerminatorJob(JobRepository jobRepository, Step terminationStep, SystemDestructionValidator systemDestructionValidator) {
