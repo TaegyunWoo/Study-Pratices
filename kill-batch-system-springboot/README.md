@@ -18,8 +18,8 @@
 
 ## 예시 코드
 
-- `com/system/batch/tasklet/ZombieProcessCleanupTasklet.java`
-- `com/system/batch/config/ZombieBatchConfig.java`
+- [src/main/java/com/system/batch/tasklet/ZombieProcessCleanupTasklet.java](src/main/java/com/system/batch/tasklet/ZombieProcessCleanupTasklet.java)
+- [src/main/java/com/system/batch/config/ZombieBatchConfig.java](src/main/java/com/system/batch/config/ZombieBatchConfig.java)
 
 # 청크 지향 처리
 
@@ -521,12 +521,341 @@ public Tasklet infiltrationTasklet(
 ) {
   // StepExecution의 ExecutionContext에서 타겟 시스템 상태를 주입받는다
 }
+
+@Bean
+@StepScope
+public Tasklet infiltrationTasklet(
+        @Value("#{jobExecutionContext['previousSystemState']}") String prevState
+) {
+    // StepScope 에서도 JobExecution의 ExecutionContext에 접근할 수 있다.
+}
 ```
 
 위 코드의 `jobExecutionContext`와 `stepExecutionContext` 는 각각 다른 범위를 가진다.
 
 - `@JobScope` 에서 가져온 ExecutionContext : Job에 속한 모든 컴포넌트(Step, Tasklet 등등...)에서 `@Value("#{jobExecutionContext['key']}")` 로 접근할 수 있다.
 - `@StepScope` 에서 가져온 ExecutionContext : 해당 Step에 속한 컴포넌트에서만 접근할 수 있다.
+- Step ExecutionContext 의 데이터 접근 제한 : Step 간의 데이터 독립성을 보장하기 위해, 아래와 같은 제약사항이 있다.
+  - Step의 ExecutionContext에 저장된 데이터는 `@Value("#{jobExecutionContext['key']}")` 로 접근할 수 없다. 즉, Step 수준의 데이터를 Job 수준에서 가져올 수 없다.
+  - 한 Step의 ExecutionContext는 다른 Step에서 접근할 수 없다. 예를 들어, StepA의 ExecutionContext에 저장된 데이터를 StepB에서 `@Value("#{stepExecutionContext['key']}")` 로 가져올 수 없다.
+
+# Spring Batch Listener
+
+---
+
+## Spring Batch Listener 란?
+
+리스너는 배치 처리의 주요 순간들을 관찰하고, 각 시점에 필요한 동작을 정의할 수 있는 강력한 도구이다.
+
+즉, 배치 처리 중 발생하는 특정 이벤트를 감지하고 원하는 로직을 실행할 수 있게 해준다.
+
+이를 통해, 로깅, 모니터링, 알림 전송, 리소스 정리 등 다양한 부가 기능을 손쉽게 구현할 수 있다.
+
+## Spring Batch가 제공하는 주요 Listener 인터페이스
+
+### JobExecutionListener
+
+```java
+public interface JobExecutionListener {
+    default void beforeJob(JobExecution jobExecution) { }
+    default void afterJob(JobExecution jobExecution) { }
+}
+```
+
+- Job의 시작과 종료 시점에 호출되는 리스너 인터페이스이다.
+- `beforeJob()` 메서드는 Job이 시작되기 전에 호출되며, 초기화 작업이나 로깅 등에 활용할 수 있다.
+- `afterJob()` 메서드는 Job이 종료된 후에 호출되며, 결과 처리나 정리 작업 등에 활용할 수 있다.
+  - 특히, Job의 성공/실패 여부와 관계없이 무조건 호출된다.
+
+### StepExecutionListener
+
+```java
+public interface StepExecutionListener extends StepListener {
+    default void beforeStep(StepExecution stepExecution) {
+    }
+
+    @Nullable
+    default ExitStatus afterStep(StepExecution stepExecution) {
+	return null;
+    }
+}
+```
+
+- Step의 시작과 종료 시점에 호출되는 리스너 인터페이스이다.
+- `beforeStep()` 메서드는 Step이 시작되기 전에 호출되며, Step 초기화 작업이나 로깅 등에 활용할 수 있다.
+- `afterStep()` 메서드는 Step이 종료된 후에 호출되며, 결과 처리나 정리 작업 등에 활용할 수 있다.
+  - Step의 성공/실패 여부와 관계없이 무조건 호출된다.
+
+### ChunkListener
+
+```java
+public interface ChunkListener extends StepListener {
+    default void beforeChunk(ChunkContext context) {
+    }
+
+    default void afterChunk(ChunkContext context) {
+    }
+	
+    default void afterChunkError(ChunkContext context) {
+    }
+}
+```
+
+- 청크 단위 처리의 시작과 종료 시점에 호출되는 리스너 인터페이스이다.
+- `beforeChunk()` 메서드는 청크 처리가 시작되기 전에 호출되며, 초기화 작업이나 로깅 등에 활용할 수 있다.
+- `afterChunk()` 메서드는 트랜잭션이 커밋된 후에 호출된다.
+- `afterChunkError()` 메서드는 청크 트랜잭션이 롤백된 이후에 호출된다.
+
+> ChunkListener 는 청크 지향 Step 뿐만 아니라, Tasklet 지향 Step 에서도 사용할 수 있다.
+> Tasklet 의 `execute()` 메서드 호출 전후, 그리고 예외 발생 시점에 각각 호출된다.
+> 또한 RepeatStatus.CONTINUABLE 을 반환하여 반복 실행되는 Tasklet 에서도 매 반복마다 호출된다. (StepExecutionListener 는 Step 의 시작/종료 시점에만 호출되므로, 반복되는 Tasklet 이라도 한번만 호출된다.)
+
+### ItemReadListener, ItemProcessListener, ItemWriteListener
+
+```java
+// ItemReadListener.java
+public interface ItemReadListener<T> extends StepListener {
+    default void beforeRead() { }
+    default void afterRead(T item) { }
+    default void onReadError(Exception ex) { }
+}
+
+// ItemProcessListener.java
+public interface ItemProcessListener<T, S> extends StepListener {
+    default void beforeProcess(T item) { }
+    default void afterProcess(T item, @Nullable S result) { }
+    default void onProcessError(T item, Exception e) { }
+}
+
+// ItemWriteListener.java
+public interface ItemWriteListener<S> extends StepListener {
+    default void beforeWrite(Chunk<? extends S> items) { }
+    default void afterWrite(Chunk<? extends S> items) { }
+    default void onWriteError(Exception exception, Chunk<? extends S> items) { }
+}
+```
+
+- 청크 지향 처리 Step에서 각각 읽기, 처리, 쓰기 작업의 시작과 종료 시점에 호출되는 리스너 인터페이스들이다.
+- 각 메서드들은 아이템 단위의 처리 전후와 에러 발생 시점에 호출된다.
+- 주요 포인트
+  - `ItemReadListener.afterRead()` : `ItemReader.read()` 호출 후에 호출되지만, 더이상 읽을 데이터가 없어 `null`을 반환하는 경우에는 호출되지 않는다.
+  - `ItemProcessListener.afterProcess()` : `ItemProcessor.process()` 메서드가 `null`을 반환하는 경우에도 호출된다. (즉, 해당 아이템이 필터링된 경우에도 호출된다.)
+  - `ItemWriteListener.afterWrite()` : 트랜잭션이 커밋되기 전, 그리고 `ChunkListener.afterChunk()` 보다 먼저 호출된다.
+
+### 각 리스너들의 호출 시점
+
+![img.png](img/img4.png)
+
+### 리스너 활용 예시
+
+- 단계별 모니터링 및 추적 : 처리 단계별 로깅 등
+- 실행 결과에 따른 후속 처리
+- 데이터 가공 및 전달 : 실제 처리 로직 전후에 데이터를 추가로 정제하거나 변환할 수 있다. Step간 데이터 전달이나 다음 처리에 필요한 정보를 미리 준비할 수 있다.
+- 부가 기능 분리
+
+## 배치 리스너 구현 방법
+
+### 구현 방법 1) 전용 리스너 인터페이스를 직접 구현하는 방식
+
+- [src/main/java/com/system/batch/lesson/listener/BigBrotherJobExecutionListener.java](src/main/java/com/system/batch/lesson/listener/BigBrotherJobExecutionListener.java)
+- [src/main/java/com/system/batch/lesson/listener/BigBrotherStepExecutionListener.java](src/main/java/com/system/batch/lesson/listener/BigBrotherStepExecutionListener.java)
+- 리스너 등록
+  - ```java
+    @Bean
+    public Job systemMonitoringJob(JobRepository jobRepository, Step monitoringStep) {
+        return new JobBuilder("systemMonitoringJob", jobRepository)
+            .listener(new BigBrotherJobExecutionListener())
+            .start(monitoringStep)
+            .build();
+    }
+    ```
+
+### 구현 방법 2) 리스너 특화 애너테이션을 사용하는 방식
+
+- [src/main/java/com/system/batch/lesson/listener/ServerRackControlListener.java](src/main/java/com/system/batch/lesson/listener/ServerRackControlListener.java)
+- [src/main/java/com/system/batch/lesson/listener/ServerRoomInfiltrationListener.java](src/main/java/com/system/batch/lesson/listener/ServerRoomInfiltrationListener.java)
+- 리스너 등록
+  - ```java
+    @Bean
+    public Step serverRackControlStep(Tasklet destructiveTasklet) {
+        return new StepBuilder("serverRackControlStep", jobRepository)
+            .tasklet(destructiveTasklet(), transactionManager)
+            .listener(new ServerRackControlListener()) // 빌더의 listener() 메서드에 전달
+            .build();
+    }
+    ```
+- 제공 애너테이션 종류
+  - ```
+    @AfterChunk, @AfterChunkError, @AfterJob, @AfterProcess, @AfterRead, @AfterStep, @AfterWrite, @BeforeChunk, @BeforeJob, @BeforeProcess, @BeforeRead, @BeforeStep, @BeforeWrite, @OnProcessError, @OnReadError, @OnSkipInProcess, @OnSkipInRead, @OnSkipInWrite
+    ```
+    
+## JobExecutionListener 와 ExecutionContext 를 활용한 동적 데이터 전달
+
+잡 파라미터만으로는 전달할 수 없는 동적인 데이터가 필요한 경우, `JobExecutionListener` 의 `beforeJob()` 메서드를 활용하면 추가적인 동적 데이터를 각 Step에 전달할 수 있다.
+
+### 예시 코드
+
+- [JobExecutionListener 구현체](src/main/java/com/system/batch/lesson/listener/InfiltrationPlanListener.java)
+- [Job 설정 코드](src/main/java/com/system/batch/lesson/listener/AdvancedSystemInfiltrationConfig.java)
+
+## JobParameter 가 아닌 ExecutionContext 를 사용하는 이유
+
+- 배치 작업의 재현 가능성과 일관성을 보장하기 위해, **JobParameter 는 불변성**을 갖기 때문이다.
+  - 재현 가능성: 동일한 JobParameters로 실행한 Job은 항상 동일한 결과를 생성해야 한다. 실행 중간에 JobParameters가 변경되면 이를 보장할 수 없다.
+  - 추적 가능성: 배치 작업의 실행 기록(JobInstance, JobExecution)과 JobParameters는 메타데이터 저장소에 저장된다. JobParameters가 변경 가능하다면 기록과 실제 작업의 불일치가 발생할 수 있다.
+- **따라서, 실행 시점에 동적으로 결정되는 데이터는 JobParameters가 아닌 ExecutionContext에 저장하여 전달하는 것이 바람직하다.**
+
+### ExecutionContext 사용시 주의사항
+
+#### 잘못된 코드
+
+```java
+@Override
+public void beforeJob(JobExecution jobExecution) {
+    jobExecution.getExecutionContext()
+        .put("targetDate", LocalDate.now()); // 치명적인 실수
+}
+```
+
+- 위 코드는 `LocalDate.now()` 를 ExecutionContext 에 저장하고 있다.
+- 문제점
+  - `LocalDate.now()` 는 실행 시점에 따라 값이 달라진다.
+  - 따라서, Job 이 재시작될 때마다 ExecutionContext 에 저장된 값이 달라질 수 있다.
+  - 이는 배치 작업의 재현 가능성과 일관성을 해친다. 어제 데이터를 다시 처리하고 싶으면? 불가능하다. 프로그램을 수정하지 않으면 그날의 데이터를 다시 처리할 수 없다.
+
+### 올바른 코드
+
+```shell
+# 외부에서 파라미터로 받는다.
+./gradlew bootRun --args='--spring.batch.job.name=systemInfiltrationJob -date=2024-10-13'
+```
+
+- 외부에서 날짜 값을 전달받으면, 배치 작업의 유연성을 극대화할 수 있다.
+- JobParameters를 사용할 수 있다면 그 방법을 사용하라. 외부에서 값을 받는 것이 훨씬 더 안전하고 유연하다.
+- JobExecutionListener와 ExecutionContext는 외부에서 값을 받을 수 없는 경우에만 사용하자.
+
+## 보다 간결하게 ExecutionContext 가져오기
+
+Step 에서 스텝간 공유할 수 있는 ExecutionContext 를 가져올때, Step의 ExecutionContext 을 먼저 가져오고, 다시 거기서 Job 수준의 ExecutionContext 를 가져오는 번거로운 과정을 거쳐야 한다.
+
+즉, `chunkContext.getStepContext().getStepExecution().getJobExecution().getExecutionContext()` 와 같이 긴 코드를 작성하는 것은 번거롭다.
+
+ExecutionContextPromotionListener 를 사용해서, 보다 간결하게 스텝간 데이터 공유를 할 수 있다.
+
+### ExecutionContextPromotionListener 란?
+
+- Step 수준 ExecutionContext 의 데이터를 Job 수준 ExecutionContext 로 **승격(Promote)** 시켜주는 리스너이다.
+  - Spring Batch에서는 Step 수준의 ExecutionContext 데이터를 Job 수준의 ExecutionContext로 옮기는 과정을 승격(Promote)이라 부른다.
+- `ExecutionContextPromotionListener` 의 `setKeys()` 메서드를 사용하여, 승격시킬 키 목록을 지정할 수 있다.
+- [사용 예시코드](src/main/java/com/system/batch/lesson/listener/SystemTerminationConfig.java)
+
+![img.png](img/img4.png)
+
+### ExecutionContextPromotionListener 사용시 주의사항
+
+각 Step은 가능한 한 독립적으로 설계하여 재사용성과 유지보수성을 높이는 것이 좋다.
+
+불가피한 경우가 아니라면 Step 간 데이터 의존성은 최소화하는 것이 좋다.
+
+Step 간 데이터 공유가 늘어날수록 복잡도가 증가한다.
+
+## Listener 와 `@JobScope`, `@StepScope` 통합
+
+리스너 구현체에 `@JobScope` 또는 `@StepScope` 애너테이션을 적용할 수 있다.
+
+이를 통해 "실행 시점에 결정되는 값(잡 파라미터)"들을 리스너 내에서도 활용할 수 있다.
+
+- [예시 코드](src/main/java/com/system/batch/lesson/listener/SystemDestructionConfig.java)
+
+## 리스너를 효과적으로 다루는 방법
+
+### 적절한 리스너 사용
+
+작업 범위와 목적에 따라 적절한 리스너를 선택해야한다.
+
+- JobExecutionListener: 전체 작업의 시작과 종료
+- StepExecutionListener: 각 작업 단계의 실행
+- ChunkListener: 작업을 청크단위로 실행할 때, 반복의 시작과 종료 시점을 통제
+- Item[Read|Process|Write]Listener: 개별 아이템 식별 통제
+
+### 예외 처리는 신중하게
+
+`JobExecutionListener`의 `beforeJob()`과 `StepExecutionListener`의 `beforeStep()`에서 예외가 발생하면 Job과 Step이 실패한 것으로 판단된다.
+
+하지만 모든 예외가 Step을 중단시켜야 할 만큼 치명적인 것은 아니다. 이런 경우는 직접 예외를 잡아서 무시하고 진행하는 것이 현명하다.
+
+> `JobExecutionListener.afterJob()`과 `StepExecutionListener.afterStep()`에서 발생한 예외는 무시된다. 즉, 예외가 발생해도 Job과 Step의 실행 결과에 영향을 미치진 않는다.
+
+```java
+@Override
+public void beforeStep(StepExecution stepExecution) {
+    try {
+        // 치명적인 로직 수행
+        systemMetricCollector.collect();
+    } catch (Exception e) {
+        // 심각하지 않은 예외는 로그만 남기고 진행
+        log.warn("메트릭 수집 실패. 작전은 계속 진행: {}", e.getMessage());
+        // 정말 심각한 문제면 예외를 던져서 Step을 중단시킨다
+        // throw new RuntimeException("치명적 오류 발생", e);
+    }
+}
+```
+
+### 단일 책임 원칙 준수
+
+리스너는 감시와 통제만 담당한다. 비즈니스 로직은 분리하는 것이 좋다. 리스너가 너무 많은 일을 하면 유지보수가 어려워지고 시스템 동작을 파악하기 힘들어진다.
+
+#### 성능 최적화) 실행 빈도 고려
+
+- `JobExecutionListener` / `StepExecutionListener`
+  - Job, Step 실행당 한 번씩만 실행되므로 비교적 안전하다
+  - 무거운 로직이 들어가도 전체 성능에 큰 영향 없음
+- `ItemReadListener` / `ItemProcessListener`
+  - 매 아이템마다 실행되므로 치명적일 수 있다
+
+```java
+// 이런 코드는 시스템을 마비시킬 수 있다
+@Override
+public void afterRead(Object item) {
+    heavyOperation();  // 매 아이템마다 실행되면 시스템이 마비된다
+    remoteApiCall();   // 외부 API 호출은 더더욱 위험
+}
+```
+
+### 성능 최적화) 리소스 사용 최소화
+
+- 데이터베이스 연결, 파일 I/O, 외부 API 호출은 최소화
+- 리스너 내 로직은 가능한 한 가볍게 유지하라
+- 특히 Item 단위 리스너에서는 더욱 중요하다
+
+
+// FlatFileItemReader
+
+#### 고정 길이 형식의 파일 읽기
+
+```
+ERR001  2024-01-19 10:15:23  CRITICAL  1234  SYSTEM  CRASH DETECT \n
+ERR002  2024-01-19 10:15:25  FATAL     1235  MEMORY  OVERFLOW FAIL\n
+```
+
+위와 같이 단순히 고정 길이 형식의 파일을 읽어야 하는 경우, `FlatFileItemReader.fixedLength()` 를 사용할 수 있다.
+
+[예시코드](src/main/java/com/system/batch/lesson/flatfileitemreader/FixedLengthSystemFailureJobConfig.java)
+
+#### 정규식으로 파일 읽기
+
+```
+[WARNING][Thread-156][CPU: 78%] Thread pool saturation detected - 45/50 threads in use...
+[ERROR][Thread-157][CPU: 92%] Thread deadlock detected between Thread-157 and Thread-159
+[FATAL][Thread-159][CPU: 95%] Thread dump initiated - system unresponsive for 30s
+```
+
+위와 같이 정규식 패턴으로 파일을 읽어야 하는 경우, `RegexLineTokenizer` 를 사용할 수 있다.
+
+[예시코드](src/main/java/com/system/batch/lesson/flatfileitemreader/RegexSystemLogJobConfig.java)
+
+
+
 
 # 파일 기반 배치 처리
 
@@ -620,7 +949,7 @@ public T mapLine(String line, int lineNumber) throws Exception {
 
 #### FlatFileItemReader 원리 정리
 
-![img.png](img/img4.png)
+![img.png](img/img5.png)
 
 #### 예시코드
 
