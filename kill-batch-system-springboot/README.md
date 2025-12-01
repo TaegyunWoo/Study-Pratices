@@ -1038,3 +1038,67 @@ public record SystemDeath(String command, int cpu, String status) {}
 
 - `targetType()` 메서드의 매개변수로 Record 클래스가 넘어오면, Spring Batch 는 내부적으로 BeanWrapperFieldSetMapper 대신 **RecordFieldSetMapper**를 사용
 - RecordFieldSetMapper 은 setter 를 사용하는 것이 아니라, record 의 생성자를 사용해서 매핑한다.
+
+# FlatFileItemWriter
+
+---
+
+## FlatFileItemWriter 란?
+
+- FlatFileItemWriter 는 도메인 객체를 플랫 파일 형식으로 출력하는 Writer 이다.
+- 총 두개의 과정, `필드 추출` 과 `문자열 결합`으로 구성된다.
+  - `필드 추출` : `FieldExtractor` 인터페이스를 사용하여, 도메인 객체에서 출력할 필드들을 추출한다.
+  - `문자열 결합` : `LineAggregator` 인터페이스를 사용하여, 추출된 필드들을 하나의 문자열 라인으로 결합한다.
+
+![img.png](img/img6.png)
+
+## 1단계: FieldExtractor (필드 추출)
+
+![img.png](img/img7.png)
+
+```java
+public interface FieldExtractor<T> {
+    Object[] extract(T item);
+}
+```
+
+- `extract()` 메서드는 도메인 객체(`T`)를 받아서, 출력할 필드들을 Object 배열로 반환한다.
+- 그 예시는 아래와 같다.
+
+```java
+public class DeathNoteFieldExtractor implements FieldExtractor<DeathNote> {
+    @Override
+    public Object[] extract(DeathNote deathNote) {
+        return new Object[]{deathNote.getName(), deathNote.getCauseOfDeath()};
+    }
+}
+```
+
+- 위 예시에서 `DeathNote` 객체에서 `name` 과 `causeOfDeath` 필드를 추출하여 Object 배열로 반환하고 있다.
+- Spring Batch 는 `FieldExtractor` 의 기본 구현체로 `BeanWrapperFieldExtractor` 와 `RecordFieldExtractor` 를 제공한다.
+  - `BeanWrapperFieldExtractor` : 자바 빈 규약을 따르는 객체에서 필드를 추출한다. (getter 메서드 사용)
+  - `RecordFieldExtractor` : 자바 Record 클래스에서 필드를 추출한다.
+  - SpringBatch 는 파일에 쓸 도메인 객체의 타입에 따라, 이 두 구현체 중 하나를 자동으로 선택한다.
+    - 도메인 객체가 Record 클래스라면 `RecordFieldExtractor` 를 사용하고, 그렇지 않다면 `BeanWrapperFieldExtractor` 를 사용한다.
+
+## 2단계: LineAggregator (문자열 결합)
+
+- `LineAggregator` 인터페이스는 추출된 필드들을 하나의 문자열 라인으로 결합하는 역할을 한다. SpringBatch에서 제공하는 구현체로는 `DelimitedLineAggregator` 와 `FormatterLineAggregator` 가 있다.
+  - `DelimitedLineAggregator` : 구분자(예: 쉼표)로 필드들을 결합한다.
+  - `FormatterLineAggregator` : 고정 길이 형식을 포함한 다른 형식으로 파일을 쓸 때 사용된다.
+
+![img.png](img/img8.png)
+
+```java
+public interface LineAggregator<T> {
+    String aggregate(T item);
+}
+```
+
+- `aggregate()` 메서드는 도메인 객체(`T`)를 받아서, 하나의 문자열 라인으로 결합하여 반환한다.
+- `FlatFileItemWriter` 는 `LineAggregator` 만을 의존하는데, `LineAggregator` 가 내부적으로 `FieldExtractor` 를 사용하여 필드값을 추출한 뒤 문자열로 변환하게 된다.
+  - 즉, `FlatFileItemWriter` 에서 `FieldExtractor` 를 직접 사용하는 것이 아니라, `LineAggregator` 가 `FieldExtractor` 를 사용한다.
+
+## 예시코드
+
+- [DelimitedDeathNoteJobConfig](src/main/java/com/system/batch/lesson/flatfileitemwriter/DelimitedDeathNoteWriteJobConfig.java)
