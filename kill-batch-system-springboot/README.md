@@ -1052,7 +1052,7 @@ public record SystemDeath(String command, int cpu, String status) {}
 
 ![img.png](img/img6.png)
 
-## 1단계: FieldExtractor (필드 추출)
+### 1단계: FieldExtractor (필드 추출)
 
 ![img.png](img/img7.png)
 
@@ -1081,7 +1081,7 @@ public class DeathNoteFieldExtractor implements FieldExtractor<DeathNote> {
   - SpringBatch 는 파일에 쓸 도메인 객체의 타입에 따라, 이 두 구현체 중 하나를 자동으로 선택한다.
     - 도메인 객체가 Record 클래스라면 `RecordFieldExtractor` 를 사용하고, 그렇지 않다면 `BeanWrapperFieldExtractor` 를 사용한다.
 
-## 2단계: LineAggregator (문자열 결합)
+### 2단계 - 구분자로 문자열 합치기: `LineAggregator` -> `DelimitedLineAggregator`
 
 - `LineAggregator` 인터페이스는 추출된 필드들을 하나의 문자열 라인으로 결합하는 역할을 한다. SpringBatch에서 제공하는 구현체로는 `DelimitedLineAggregator` 와 `FormatterLineAggregator` 가 있다.
   - `DelimitedLineAggregator` : 구분자(예: 쉼표)로 필드들을 결합한다.
@@ -1099,6 +1099,40 @@ public interface LineAggregator<T> {
 - `FlatFileItemWriter` 는 `LineAggregator` 만을 의존하는데, `LineAggregator` 가 내부적으로 `FieldExtractor` 를 사용하여 필드값을 추출한 뒤 문자열로 변환하게 된다.
   - 즉, `FlatFileItemWriter` 에서 `FieldExtractor` 를 직접 사용하는 것이 아니라, `LineAggregator` 가 `FieldExtractor` 를 사용한다.
 
-## 예시코드
+### 예시코드
 
 - [DelimitedDeathNoteJobConfig](src/main/java/com/system/batch/lesson/flatfileitemwriter/DelimitedDeathNoteWriteJobConfig.java)
+
+### 2단계 - 커스텀 포맷 형식으로 문자열 합치기: `LineAggregator` -> `FormatterLineAggregator`
+
+`LineAggregator`의 또다른 구현체인 `FormatterLineAggregator` 를 사용해서, 원하는 포맷으로 파일에 쓸 수 있다.
+
+[FormatterDeathNoteJobConfig](src/main/java/com/system/batch/lesson/flatfileitemwriter/FormatterDeathNoteWriteJobConfig.java)
+
+## FlatFileItemWriter 의 롤백 전략: 버퍼링을 통한 안전한 파일 쓰기
+
+- DB와 달리 파일은 이미 쓰여진 데이터를 롤백할 수 없다는 문제가 있다. 이 문제를 해결하기 위해 `FlatFileItemWriter` 는 데이터를 즉시 파일에 쓰지 않고, 내부 버퍼에 일시적으로 저장해둔다.
+- 이후 청크 처리가 정상적으로 완료되어 트랜잭션이 커밋되려고 할 때, 비로소 버퍼의 데이터를 파일에 쓴다.
+
+![img.png](img/img9.png)
+
+## 파일 쓰기와 OS 캐시: `forceSync()`
+
+- OS는 성능을 위해 매번 디스크에 직접 쓰지 않고 메모리 캐시에 데이터를 먼저 저장한다. 이로 인해, **OS가 갑자기 중단되면 캐시의 데이터가 디스크에 쓰이지 못하고 유실될 수 있다.**
+- `forceSync()` 를 사용하면 캐시가 아닌 디스크에 즉시 동기화되어 OS 중단이나 파일 시스템 문제가 발생해도 데이터 손실 위험이 적다. 다만 성능 저하가 발생할 순 있다.
+
+## 대용량 파일의 분할 처리: `MultiResourceItemWriter`
+
+- `MultiResourceItemWriter` 는 여러 개의 리소스 (파일)에 데이터를 분배하는 특별한 ItemWriter 구현체이다.
+- 대용량 데이터를 관리하기 쉬운 크기의 여러 파일로 분할해서 저장하므로, 데이터 처리가 훨씬 효율적으로 이루어진다.
+- **`MultiResourceItemWriter` 는 직접 파일을 쓰지는 않는다. 실제 파일 쓰기는 `FlatFileItemWriter` 같은 ItemWriter 에 위임한다.**
+  - 즉, FileItemWriter 는 2개 종류로 나눌 수 있다. 실제로 파일에 쓰는 작업을 수행하는 FileItemWriter 구현체가 있고, 쓰기 작업을 관리하고 배분하는 FileItemWriter 가 있다.
+  - 실제로 파일에 쓰는 작업을 수행하는 FileItemWriter 는 반드시 `ResourceAwareItemWriterItemStream` 인터페이스를 구현해야 한다. (`FlatFileItemWriter` 는 이미 이를 구현하고 있다.)
+
+### 예시 코드
+
+[MultiResourceDeathNoteWriteJobConfig](src/main/java/com/system/batch/lesson/multiresourceitemwriter/MultiResourceDeathNoteWriteJobConfig.java)
+
+# FlatFileItemReader 와 FlatFileItemWriter 실전 예제
+
+[LogProcessingJobConfig](src/main/java/com/system/batch/lesson/flatfileitemwriter/LogProcessingJobConfig.java)

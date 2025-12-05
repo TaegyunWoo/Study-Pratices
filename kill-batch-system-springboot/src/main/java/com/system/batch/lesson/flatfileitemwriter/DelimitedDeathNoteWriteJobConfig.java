@@ -39,7 +39,7 @@ public class DelimitedDeathNoteWriteJobConfig {
             ListItemReader<DeathNote> delimitedDeathNoteListItemReader,
             FlatFileItemWriter<DeathNote> delimitedDeathNoteWriter
     ) {
-        return new StepBuilder("deathNoteWriteStep", jobRepository)
+        return new StepBuilder("delimitedDeathNoteWriteStep", jobRepository)
                 .<DeathNote, DeathNote>chunk(10, transactionManager)
                 .reader(delimitedDeathNoteListItemReader)
                 .writer(delimitedDeathNoteWriter)
@@ -106,6 +106,25 @@ public class DelimitedDeathNoteWriteJobConfig {
                 .build();
     }
 
+    /**
+     * Delimited(구분자) 방식의 FlatFileItemWriter (레코드 기반)
+     */
+    @Bean
+    @StepScope
+    public FlatFileItemWriter<DeathNoteRecord> delimitedDeathNoteRecordWriter(
+        @Value("#{jobParameters['outputDir']}") String outputDir
+    ) {
+        return new FlatFileItemWriterBuilder<DeathNoteRecord>()
+            .name("delimitedDeathNoteRecordWriter")
+            .resource(new FileSystemResource(outputDir + "/death_notes.csv"))
+            .delimited()
+            .delimiter(",")
+            .sourceType(DeathNoteRecord.class)
+            .names("victimId", "victimName", "executionDate", "causeOfDeath")
+            .headerCallback(writer -> writer.write("처형ID,피해자명,처형일자,사인"))
+            .build();
+    }
+
     @Data
     @AllArgsConstructor
     public static class DeathNote {
@@ -114,4 +133,6 @@ public class DelimitedDeathNoteWriteJobConfig {
         private String executionDate;
         private String causeOfDeath;
     }
+
+    public record DeathNoteRecord(String victimId, String victimName, String executionDate, String causeOfDeath) { }
 }
