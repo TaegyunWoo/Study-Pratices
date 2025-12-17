@@ -1140,3 +1140,91 @@ public interface LineAggregator<T> {
 # JSON 파일 읽고 쓰기 예제
 
 [JsonFileSystemDeathJobConfig](src/main/java/com/system/batch/lesson/jsonfile/JsonFileSystemDeathJobConfig.java)
+
+# 관계형 데이터베이스 읽고 쓰기
+
+## 관계형 DB 읽기
+
+데이터베이스를 읽기 위해 사용되는 전략에는 크게 두가지가 있다.
+
+- `JdbcCursorItemReader` : 커서 기반 처리
+  - 데이터베이스와 연결을 유지하면서 데이터를 순차적으로 가져온다.
+  - 하나의 커넥션으로 데이터를 스트리밍하듯 처리한다.
+  - 메모리는 최소한으로 사용하면서 최대한의 성능을 뽑아낸다.
+- `JdbcPagingItemReader` : 페이징 기반 처리
+  - 데이터를 정확한 크기로 잘라서 차근차근 처리한다.
+  - 각 페이지마다 새로운 쿼리를 날려 안정성을 보장한다.
+
+| 장단점 | `JdbcCursorItemReader` : 커서 기반 처리                                                                                                                      | `JdbcPagingItemReader` : 페이징 기반 처리                                                           |
+|-----|--------------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------|
+| 장점  | offset 등을 계산할 필요없이 커서를 하나씩 옮기면 되기에 조회성능이 좋다. 첫번째 청크와 마지막 청크의 읽기 속도가 거의 동일하다. 또한, 커서를 여는 시점(읽기 트랜잭션 시작 시점)을 기준으로 데이터를 읽기 때문에, 작업 도중 데이터 변경에 영향을 받지 않는다. | 한 페이지(청크)를 읽을 때만 커넥션을 맺기에 긴 배치 작업에도 커넥션 관리가 유용하다. 페이지 단위로 쿼리를 날리기에 병렬 처리에 유리하다.              |
+| 단점  | 배치 작업이 끝날때까지 읽기 트랜잭션이 오래 유지된다. 따라서 네트워크 중단이나 다른 자원의 사용에 불리하다. 또한 커서 자체가 쓰레드(하나의 커넥션)에 종속되기에 멀티 쓰레딩이 어렵다.                                               | 커서 방식에 비해 조회 성능이 느리다. 배치 실행 중, 앞쪽 페이지 데이터가 삭제되거나 정렬 기준값이 변경되면 페이지 경계가 틀어져 누락 및 중복이 발생할 수 있다. |
+
+### `JdbcCursorItemReader` : 커서 기반 처리
+
+커서 기반 처리 방식은 DB와 끊김없는 연결을 유지하면서, `ResultSet`을 통해 데이터를 가져오는 방식이다.
+
+- `JdbcCursorItemReader` 가 초기화(`open`)될 때, 빌더를 통해서 지정된 SQL 쿼리를 실행하고, 그 결과를 가리키는 커서를 생성한다.
+- 이후 `read()` 가 호출될때마다 `ResultSet.next()` 를 실행하며 한 행씩 데이터를 가져온다.
+
+![img.png](img/img10.png)
+
+즉 `JdbcCursorItemReader` 는 매번 새로운 쿼리를 실행하는 것이 아니라, **이미 열린 `ResultSet` 에서 커서를 이동하면서 데이터를 하나씩 읽어오는 구조**이다.
+
+이 덕분에 대량의 데이터를 한번에 메모리에 올리지 않고도 처리할 수 있다.
+
+단, **DB와의 연결을 유지한 채 배치작업이 진행되므로, 커넥션이 너무 오래 유지될 수 있다.**
+
+#### `JdbcCursorItemReader` 구성요소
+
+- `DataSource` : DB 연결을 관리한다.
+- `SQL` : 데이터 조회 쿼리
+- `RowMapper` : `ResultSet` -> `Java 객체` 변환
+  - `BeanPropertyRowMapper` : setter 기반 매핑 방식이다. 자바빈 규약을 만족하는 클래스를 대상으로, DB 칼럼명과 객체의 필드명이 일치하면 자동으로 매핑해준다. (스네이크케이스를 카멜케이스로 자동 변환 지원)
+  - `DataClassRowMapper` : record 와 같은 불변 객체를 위해, 생성자 파라미터를 통해 매핑을 수행한다. 생성자에 없는 필드는 setter 방식으로 매핑한다.
+  - 커스텀 row mapper : 별도의 복잡한 변환 로직이 필요할 때 직접 구현하여 사용할 수 있다.
+- `PreparedStatement` : 쿼리 실행 및 결과 조회
+- `PreparedStatementSetter` (Optional) : 쿼리의 파라미터에 값을 동적 바인딩한다. 인젝션 공격 등을 방지한다.
+
+![img.png](img/img11.png)
+
+#### `JdbcCursorItemReader` 예시 코드
+
+[JdbcCursorItemReaderJobConfig](src/main/java/com/system/batch/lesson/rdbms/CursorItemVictimRecordConfig.java)
+
+#### JDBC 드라이버의 내부 최적화
+
+- JDBC 드라이버는 기본적으로 여러 개의 row를 미리 가져와서 `ResultSet` 의 내부 버퍼에 저장해둔다.
+- 그리고 `ResultSet.next()` 가 호출될 때마다 해당 버퍼에서 데이터를 하나씩 꺼낸다. 만약 버퍼가 비었다면, **그때 다시 쿼리를 실행해서 다음 여러 개의 row를 버퍼에 저장**한다.
+
+![img.png](img/img12.png)
+
+#### 커서의 연속성
+
+- 청크 지향 처리의 경우, 각 청크 단계마다 트랜잭션이 커밋된다. 그럼 `트랜잭션이 청크마다 커밋되는데, 커서가 닫히지 않고 데이터를 계속 읽을 수 있나?` 하는 의문이 들 수 있다.
+  - _DB에서 트랜잭션이 커밋되면 일반적으로 커서도 함께 닫힌다._
+- 결론적으로 문제없다. 왜냐하면, "청크별 write 커밋에 사용되는 Step 트랜잭션"과 "데이터를 읽어오는 트랜잭션"은 서로 다른 DB 커넥션을 사용하기 때문이다.
+
+![img.png](img/img13.png)
+
+#### 스냅샷 읽기
+
+- "`ItemReader` 가 조회하는 데이터"를 Step 에서 변경한다면, `ItemReader` 가 그 변화를 조회할 수 있을까? 역시 알지 못한다.
+- `ItemReader` 는 읽기 시작한 시점 (트랜잭션이 시작된 시점) 을 기준으로 데이터를 읽어들인다. 따라서 이후에 변경된 사항이 있더라도 알 수 없다.
+  - _트랜잭션 격리 수준에 따라 달라질 순 있을 것 같다._
+
+![img.png](img/img14.png)
+
+#### JdbcCursorItemReader 의 SQL `ORDER BY` 설정
+
+- 사실 `JdbcCursorItemReader` 의 sql에 `ORDER BY` 절이 필요하다.
+- Step 이 실패하여 재시작되는 경우, `JdbcCursorItemReader` 는 `jumpToItem()` 을 통해서 **이전에 실패했던 지점부터 다시 시작**한다. 이때 `ResultSet.next()` 를 호출해서 실패 지점까지 커서를 이동시킨다.
+- **만약 쿼리 결과의 순서가 매번 다르다면, 잘못된 위치에서부터 재시작될 수 있다.**
+- 따라서 `ORDER BY` 절을 반드시 추가해야하며 보통 PK로 설정한다.
+
+![img.png](img/img15.png)
+
+![img.png](img/img16.png)
+
+### `JdbcPagingItemReader` : 페이징 기반 처리
+
