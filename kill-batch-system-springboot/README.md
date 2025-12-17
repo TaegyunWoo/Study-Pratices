@@ -1136,3 +1136,7 @@ public interface LineAggregator<T> {
 # FlatFileItemReader 와 FlatFileItemWriter 실전 예제
 
 [LogProcessingJobConfig](src/main/java/com/system/batch/lesson/flatfileitemwriter/LogProcessingJobConfig.java)
+
+# JSON 파일 읽고 쓰기 예제
+
+[JsonFileSystemDeathJobConfig](src/main/java/com/system/batch/lesson/jsonfile/JsonFileSystemDeathJobConfig.java)
