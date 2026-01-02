@@ -1367,5 +1367,7 @@ url: jdbc:postgresql://localhost:5432/postgres?reWriteBatchedInserts=true
 - `NamedParameterJdbcTemplate`은 `ItemSqlParameterSourceProvider` 또는 `ItemPreparedStatementSetter`를 사용하여 PreparedStatement의 파라미터를 설정한다. 이렇게 각 아이템마다 설정된 `PreparedStatement`는 배치에 순차적으로 추가된다.
 - 마지막 아이템까지 처리가 완료되면, 배치에 누적된 모든 `PreparedStatement`가 단일 네트워크 호출로 데이터베이스에 전송된다.
 
+### JdbcPagingItemReader와 JdbcBatchItemWriter 예제 코드
 
+[ReaderAndWriterOrderRecoveryJobConfig](src/main/java/com/system/batch/lesson/rdbms/ReaderAndWriterOrderRecoveryJobConfig.java)
 
