@@ -1228,3 +1228,42 @@ public interface LineAggregator<T> {
 
 ### `JdbcPagingItemReader` : 페이징 기반 처리
 
+이번에는 커서 기반 처리 대신 페이징 기반 처리에 대해 알아보자.
+
+페이징 기반 처리를 위해서, `JdbcPagingItemReader` 를 사용한다. `JdbcPagingItemReader` 는 **Keyset 기반 페이징**을 수행한다.
+
+> [페이징 처리 방식; `Offset 기반 페이징` VS `Keyset 기반 페이징`]
+> 
+> 일반적으로 페이징 처리를 하는 방식에는 두가지 `Offset 기반 페이징` 와 `Keyset 기반 페이징`가 있다.
+> 
+> - `Offset 기반 페이징` : DB가 데이터셋을 정렬한 후에, 일정 offset 만큼 건너뛰고 limit 만큼 데이터를 가져오는 방식. 단순하지만, offset 만큼의 데이터를 읽어야하기 때문에 결국 테이블 풀스캔이 일어나 성능 저하가 발생한다.
+> - `Keyset 기반 페이징` : 특정 데이터를 기준으로 이후의 데이터를 가져온다. 기준 데이터를 탐색할때 index 를 사용한다면, 테이블 풀스캔이 일어나지 않아 성능상 유리하다.
+> 
+> 자세한 내용은 [다른 포스팅](https://taegyunwoo.github.io/tech/Tech_DBPagination#no-offset-%EB%B0%A9%EC%8B%9D%EC%9C%BC%EB%A1%9C-%EC%84%B1%EB%8A%A5-%EA%B0%9C%EC%84%A0) 을 참고해주세요.
+
+#### `JdbcPagingItemReader` 구성요소
+
+- `DataSource` : DB 연결을 담당하는 객체이다.
+- `RowMapper` : DB 조회 결과를 Java 객체로 매핑하는 객체
+- `NamedParameterJdbcTemplate` : 위치 기반으로 파라미터 값을 매핑하는 것 대신, 이름을 가진 파라미터를 사용할 수 있다.
+- `PagingQueryProvider` : Keyset 기반 페이징을 담당하며, 사용하는 DB 종류에 따라 다른 구현체가 사용된다.
+
+#### `JdbcPagingItemReaderBuilder` 의 쿼리 설정 메서드
+
+- `selectClause()` : 가져올 칼럼을 지정한다.
+- `fromClause()` : 데이터를 가져올 테이블을 지정한다.
+- `whereClause()` (선택) : 필요한 데이터만 필터링한다.
+- `groupClause()` (선택) : 데이터 집계가 필요한 경우 사용한다.
+- `sortKeys()` : `ORDER BY` 절에 사용될 정렬 키를 지정한다. 해당 키는 반드시 유니크한 키여야 한다. 유니크하지 않다면, 동일한 값을 가진 데이터들의 순서가 보장되지 않는다. 따라서 일반적으로 PK나 인덱스가 있는 칼럼을 사용한다. (성능적으로도, 인덱스를 탈 수 있는 칼럼을 지정하는 것이 좋다.)
+
+#### `JdbcPagingItemReader` 예시 코드
+
+[JdbcPagingItemReaderJobConfig](src/main/java/com/system/batch/lesson/rdbms/PagingItemVictimRecordConfig.java)
+
+
+
+
+
+
+
+
