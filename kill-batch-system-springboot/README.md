@@ -1260,10 +1260,112 @@ public interface LineAggregator<T> {
 
 [JdbcPagingItemReaderJobConfig](src/main/java/com/system/batch/lesson/rdbms/PagingItemVictimRecordConfig.java)
 
+## 관계형 DB 쓰기
 
+Spring Batch 에서는 가장 기본적인 RDB 쓰기를 위해 `JdbcBatchItemWriter` 를 제공한다.
 
+`JdbcBatchItemWriter` 는 내부적으로 `NamedParameterJdbcTemplate` 를 사용하고, JdbcTemplate 의 batchUpdate를 활용해서 청크 단위로 모아진 아이템들을 효율적으로 DB에 저장한다.
 
+### DB Insert 방식; `일반 INSERT` vs `Multi-value INSERT` vs `Batch Update`
 
+#### `일반 INSERT` : 매 쿼리마다 네트워크 패킷 발생
+
+```sql
+-- 패킷1
+INSERT INTO victims (id, name) VALUES (1, '김배치');
+-- 패킷2
+INSERT INTO victims (id, name) VALUES (2, '사불링');
+```
+
+#### `Multi-Value INSERT` : 여러 값을 하나의 쿼리로 한 번에 전송
+
+```sql
+-- 패킷1
+INSERT INTO victims (id, name) VALUES (1, '김배치'), (2, '사불링');
+```
+
+#### `Batch Update`
+
+`PreparedStatement` 를 재사용하여 쿼리 템플릿 하나와 여러 파라미터 세트를 함께 전송한다.
+
+이렇게 전달된 배치 쿼리는 DB 서버에서 처리되며, 모든 작업은 **하나의 트랜잭션 내에서 수행**된다.
+
+**이를 통해, 청크 단위로 묶인 수백 건의 데이터에 대해 원자성이 보장된다.**
+
+```sql
+-- -------[ 패킷1 ]-------
+-- 템플릿 등록
+PREPARE insert_victim (int, text) AS
+    INSERT INTO victims (id, name) VALUES ($1, $2);
+
+-- 첫번째 레코드
+EXECUTE insert_victim(1, '김배치');
+
+-- 두번째 레코드
+EXECUTE insert_victim(2, '사불링');
+
+-- 템플릿 제거
+DEALLOCATE insert_victim;
+
+-- 다만, 실제 데이터베이스에 전달되는 데이터 형식은 데이터베이스 드라이버 구현체별로 다르다.
+```
+
+또한, 모든 데이터가 한번의 네트워크 호출로 전송되므로, 네트워크 왕복 횟수가 최소화된다.
+
+**INSERT 작업을 할 경우, `Mutli-Value INSERT` 를 적극 권장한다.** 기본적으로 `batchUpdate` 는 DB 서버에서 각각의 INSERT 가 개별적으로 실행된다.
+
+하지만 `Multi-Value INSERT` 를 사용하면 하나의 통합된 쿼리로 실행되어 파싱 및 실행 횟수를 줄여 성능을 높일 수 있다.
+
+MySQL과 PostgreSQL에서는 각각 다음과 같은 설정을 통해 드라이버 레벨에서 `batchUpdate`를 `Multi-Value INSERT`로 자동 변환해준다.
+
+```text
+## application.yml
+
+# MYSQL
+url: jdbc:mysql://localhost:3306/mysql?rewriteBatchedStatements=true 
+#POSTGRESQL
+url: jdbc:postgresql://localhost:5432/postgres?reWriteBatchedInserts=true 
+```
+
+> 다만, 업데이트 작업의 경우, `Multi-Value INSERT` 로 성능 개선을 기대하기엔 어렵다.
+
+### `JdbcBatchItemWriter` 구성요소
+
+- `NamedParameterJdbcTemplate` : 네임드 파라미터 바인딩을 지원하는 JdbcTemplate 이다. SQL 실행과 결과 처리를 담당한다.
+- `SQL` : `JdbcBatchItemWriter` 가 실행할 SQL 구문을 정의한다. `INSERT`, `UPDATE`, `DELETE` 와 같은 DML 구문이 될 수 있고, 파라미터 바인딩을 위해 아래 두 가지 방식을 지원한다.
+  - 물음표 (`?`) 위치 기반 플레이스 홀더
+  - 네임드 파라미터 (`:param1`)
+- `ItemSqlParameterSourceProvider` : "Java 객체의 프로퍼티"를 "`SQL`의 네임드 파라미터"에 매핑하는 역할을 담당한다.
+  - `JdbcBatchItemWriterBuilder` 의 `beanMapped()` 메서드 사용시, `BeanPropertyItemSqlParameterSourceProvider` 구현체가 사용된다.
+  - `BeanPropertyItemSqlParameterSourceProvider` : 자바빈 규약을 따르는 객체(레코드 포함)에 대해 리플렉션을 기반으로 필드값을 바인딩한다. (`userName` -> `:userName`)
+  - 만약 직접 구현체를 만든다면, `JdbcBatchItemWriterBuilder` 의 `itemSqlParameterSourceProvider()` 메서드에 커스텀 구현체를 지정하면 된다.
+- `ItemPreparedStatementSetter` : Java 객체의 데이터를 PreparedStatement의 파라미터(`?` 파라미터)에 설정하는 역할을 한다.
+  - `ItemSqlParameterSourceProvider` (네임드 파라미터) 와 `ItemPreparedStatementSetter` (`?` 파라미터) 중, 어떤 것을 사용해서 파라미터에 값을 할당할 것인지 선택해야 한다.
+  - `ItemPreparedStatementSetter` 를 사용한다면, 아래와 같이 어떤 필드를 바인딩할 것인지 설정해야 한다.
+    - ```java
+      builder.itemPreparedStatementSetter(new VictimPreparedStatementSetter())
+      
+      //...
+      
+      public class VictimPreparedStatementSetter implements ItemPreparedStatementSetter<Victim> {
+        @Override
+        public void setValues(Victim victim, PreparedStatement ps) throws SQLException {
+            ps.setLong(1, victim.getId());                  
+            ps.setString(2, victim.getName());       
+            ps.setString(3, victim.getProcessId());        
+            ps.setTimestamp(3,  Timestamp.valueOf(terminatedAt));
+            ps.setDouble(5, victim.getStatus());
+        }
+      }
+      ```
+
+### JdbcBatchItemWriter 내부 동작 구조
+
+![img.png](img/img17.png)
+
+- 청크로 모아진 아이템들이 `JdbcBatchItemWriter`에 전달된다.
+- `NamedParameterJdbcTemplate`은 `ItemSqlParameterSourceProvider` 또는 `ItemPreparedStatementSetter`를 사용하여 PreparedStatement의 파라미터를 설정한다. 이렇게 각 아이템마다 설정된 `PreparedStatement`는 배치에 순차적으로 추가된다.
+- 마지막 아이템까지 처리가 완료되면, 배치에 누적된 모든 `PreparedStatement`가 단일 네트워크 호출로 데이터베이스에 전송된다.
 
 
 
