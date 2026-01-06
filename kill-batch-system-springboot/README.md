@@ -1403,3 +1403,41 @@ JdbcCursorItemReader 와의 주된 차이점은 내부적으로 entityManager를
 
 - [JpaCursorItemReaderPostBlockBatchConfig.java](src/main/java/com/system/batch/lesson/rdbms/JpaCursorItemReaderPostBlockBatchConfig.java)
 
+## JpaPagingItemReader
+
+JpaPagingItemReader 는 JpaCursorItemReader 와 달리, JPA를 사용하여 데이터를 페이지 단위로 조회한다.
+
+여기서 중요한 점은 이전에 살펴본 JdbcPagingItemReader 와 달리, **JpaPagingItemReader 는 offset 방식으로 페이징 처리를 수행**한다. (JdbcPagingItemReader 는 `Keyset 기반 페이징`)
+
+**따라서 실시간으로 변경되는 데이터에 대해, JpaPagingItemReader 를 사용하면 데이터 중복 조회나 생략이 발생할 수 있다.**
+
+**실시간으로 데이터가 변경되는 경우엔, 스트리밍 방식(JpaCursorItemReader)을 고려해야 한다.**
+
+### JpaPagingItemReader 구성요소
+
+- `queryString(JPQL)` or `JpaQueryProvider` : Query 생성에 사용된다. 
+- `EntityManager` : JPA 핵심 엔진
+
+![img.png](img/img19.png)
+
+1. `doReadPage()` 메서드가 호출될 때마다, 새로운 쿼리를 생성 및 실행한다.
+2. `setFirstResult()` : 현재 페이지의 시작 위치(`offset`)을 설정한다.
+3. `setMaxResults()` : 페이지 크기 설정
+4. `getResultList()` : 해당 페이지의 데이터를 가져온다.
+
+### JpaPagingItemReader 사용시 주의사항
+
+- JPQL 의 `FETCH JOIN` 은 사용하지 않는 것이 좋다. 왜냐하면, offset 만큼의 엔티티를 건너뛸 때, 굳이 건널뛸 엔티티의 연관 엔티티를 함께 메모리에 로드할 필요는 없기 때문이다.
+- `N+1` 문제는 아래와 같이 해결하는 것이 좋다.
+  - 연관 엔티티 `FetchType` 을 `EAGER` 로 설정하고, `@BatchSize` 를 조정하여 해결한다.
+  - `EAGER` 이 아닌 `LAZY` 로 설정하면, JpaPagingItemReader 의 내부 트랜잭션 처리 로직상 `@BatchSize` 가 적용되지 않는다. 따라서 반드시 `EAGER` 로 설정해야 한다.
+  - `LAZY` 인 경우 실제 연관 엔티티에 접근시 로드되는데, 이때는 이미 JpaPagingItemReader 의 읽기 트랜잭션이 끝난 후라서 `@BatchSize` 가 적용되지 않는다. (`@BatchSize` 는 트랜잭션 내에서만 동작)
+- `transacted(false)` 설정은 하는 것이 좋다. JpaPagingItemReader 내부 로직상, transacted가 true라면 데이터를 읽기 전에 EntityManager 를 `flush()` 하고 `clear()` 한다. 따라서 예상치 못한 데이터 변경이 일어날 수 있다.
+
+이런 문제들을 해결한 커스텀 구현체가 존재하며, 아래에서 사용할 수 있다.
+
+https://github.com/jojoldu/spring-batch-querydsl
+
+### JpaPagingItemReader 예시 코드
+
+[JpaPagingItemReaderPostBlockBatchConfig.java](src/main/java/com/system/batch/lesson/rdbms/JpaPagingItemReaderPostBlockBatchConfig.java)
