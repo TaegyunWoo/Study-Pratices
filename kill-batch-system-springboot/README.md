@@ -1371,3 +1371,35 @@ url: jdbc:postgresql://localhost:5432/postgres?reWriteBatchedInserts=true
 
 [ReaderAndWriterOrderRecoveryJobConfig](src/main/java/com/system/batch/lesson/rdbms/ReaderAndWriterOrderRecoveryJobConfig.java)
 
+## JpaCursorItemReader
+
+JpaCursorItemReader 는 cursor 방식으로 데이터를 순차적으로 읽어들이는 JPA 기반의 ItemReader 이다.
+
+JdbcCursorItemReader 와의 주된 차이점은 내부적으로 entityManager를 사용해 데이터를 읽는다는 점이다. 이를 통해서 SQL이 아닌 엔티티 중심의 처리가 가능하다.
+
+### JpaCursorItemReader 구성요소
+
+- `queryString(JPQL)` or `JpaQueryProvider`
+  - `queryString(JPQL)` : JpaCursorItemReader 가 데이터를 조회하기 위한 JPQL 쿼리이다. `EntityManager` 가 이 `queryString`을 사용하여 실제 실행 가능한 Query 객체를 생성한다.
+  - `JpaQueryProvider` : `queryString` 대신 `JpaQueryProvider` 를 사용하여 쿼리를 생성할수도 있다. 종류는 총 2가지, `JpaNamedQueryProvider` 와 `JpaNativeQueryProvider` 가 존재한다.
+    - `JpaNamedQueryProvider` : 엔티티 등에 미리 정의된 Named Query를 사용한다.
+    - `JpaNativeQueryProvider` : Native SQL을 사용하여 데이터를 조회한다.
+- `EntityManager` : JPA에서 엔티티의 생명주기를 관리하고 실제 DB 작업을 수행한다. JpaCursorItemReader 는 이 `EntityManager` 를 사용하여 커서 기반의 DB 조회를 실행한다. 
+- `Query` : `EntityManager` 에 의해서 생성된다. 이를 통해 데이터를 스트리밍 방식으로 읽어온다.
+
+### JpaCursorItemReader 실행 흐름
+
+![img.png](img/img18.png)
+
+1. `doOpen()`
+    - JpaCursorItemReader 초기화 시점에 호출된다.
+    - EntityManger 와 JpaQueryProvider 가 협력하여 실행 가능한 Query 객체를 생성한다.
+    - 이 Query 객체는 `getResultStream()` 을 호출하여 DB 커서를 순회할 Iterator 를 준비한다.
+2. `doRead()`
+   - 준비된 Iterator를 통해서 실제 데이터를 한건씩 읽어온다.
+   - `iterator.hasNext()`로 다음 데이터의 존재 여부를 확인하고, 데이터가 있다면 `iterator.next()`를 통해 한 건의 데이터를 반환한다. 더 이상 읽을 데이터가 없다면 `null`을 반환하여 읽기를 종료한다.
+
+### JpaCursorItemReader 예시 코드
+
+- [JpaCursorItemReaderPostBlockBatchConfig.java](src/main/java/com/system/batch/lesson/rdbms/JpaCursorItemReaderPostBlockBatchConfig.java)
+
