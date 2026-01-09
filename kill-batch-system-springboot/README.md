@@ -1478,3 +1478,106 @@ public JpaTransactionManager transactionManager(EntityManagerFactory emf) {
 
 - 새로운 데이터 INSERT : [JpaItemWriterPostBlockBatchConfig.java](src/main/java/com/system/batch/lesson/rdbms/JpaItemWriterPostBlockBatchConfig.java)
 - 기존 데이터 UPDATE : [JpaItemWriterMergePostBlockBatchConfig.java](src/main/java/com/system/batch/lesson/rdbms/JpaItemWriterMergePostBlockBatchConfig.java)
+
+# 위임 ItemWriter 와 ItemReader
+
+## CompositeItemReader
+
+`CompositeItemReader` 는 여러 ItemReader 들을 순차적으로 실행한다. 아래와 같이 생성해서 사용할 수 있다.
+
+```java
+List<ItemStreamReader<Customer>> readers = List.of(
+    shard1ItemReader,
+    shard2ItemReader
+);
+CompositeItemReader<Customer> compositeItemReader = new CompositeItemReader<>(readers);
+```
+
+![img.png](img/img20.png)
+
+1. 같은 타입의 데이터를 반환하는 ItemReader들을 List에 넣어 전달하면, CompositeItemReader가 이를 순서대로 실행한다.
+2. 이전 ItemReader가 더이상 읽을 게 없다고 `null` 반환시, 자동으로 다음 ItemReader로 넘어간다.
+
+### CompositeItemReader 가 유용한 경우
+
+- DB가 여러 샤드로 분산되어 있는 경우 유용하다. 별도의 샤드 관리 없이, 각 샤드를 바라보는 ItemReader들만 준비해서 전달하면 되기 때문이다.
+- 레거시 시스템과 신규 시스템의 데이터를 하나의 흐름으로 처리할 때도 유용하다.
+
+## CompositeItemWriter
+
+CompositeItemWriter는 여러 ItemWriter를 사용하여 데이터를 쓸때 사용된다. CompositeItemWriter는 내부적으로 아래와 같이 구현되어 있다. 
+
+```java
+public void write(Chunk<? extends T> chunk) throws Exception {
+    for (ItemWriter<? super T> writer : delegates) { //각 ItemWriter마다 청크단위로 write() 호출
+        writer.write(chunk);
+    }
+}
+```
+
+![img.png](img/img21.png)
+
+CompositeItemWriter의 구성방법은 아래와 같다.
+
+```java
+// 방법 1) 생성자에 직접 Writer 주입
+CompositeItemWriter<Hacker> writer = new CompositeItemWriter<>(
+    List.of(
+        firstWriter,
+        secondWriter,
+        thirdWriter
+    )
+);
+
+// 방법 2) 전용 빌더 사용
+CompositeItemWriterBuilder<Hacker> builder = new CompositeItemWriterBuilder<>()
+    .delegates(List.of(firstWriter, secondWriter, thirdWriter))
+    .build();
+```
+
+### CompositeItemWriter 가 유용한 경우
+
+- RDB와 NoSQL에 각각 다른 방식으로 저장하는 것처럼, 하나의 데이터를 여러 시스템에 쓰는 경우
+- DB에 정보를 저장하고, 동시에 이메일로도 발송하는 것과 같은 경우
+
+### 여러 시스템에 쓰기 작업을 할때의 트랜잭션 관리
+
+![img.png](img/img22.png)
+
+위 그림은 FlatFileItemWriter 와 JdbcBatchItemWriter 를 CompositeItemWriter 로 함께 사용하는 경우에 대한 설명이다.
+
+**결론적으로 FlatFileItemWriter 는 내부 버퍼를 통해서 쓰기 작업을 한 뒤에, 이상이 없는 경우 실제 파일 쓰기 작업을 수행(`buffer.flush()`)를 하기 때문에 데이터 일관성을 보장할 수 있다.**
+
+1. WITHOUT BUFFER 는 FlatFileItemWriter 가 버퍼 없이 바로 파일에 쓴다고 가정했을 때 발생하는 문제이다. RDB 쓰기 작업은 롤백되었지만, 파일은 그대로 남아있게 된다.
+2. WITH BUFFER 는 RDB 쓰기 작업과 파일 쓰기 작업이 함께 롤백될 수 있다.
+
+ItemWriter 는 기본적으로 아래와 같이 동작한다.
+
+1. 쓰기 작업을 임시로 저장하기 위해서, `write()` 메서드를 호출한다.
+    - `write()` : ItemWriter 구현체에 따라 다르게 동작한다. 내부 버퍼 (메모리) 에 데이터를 저장하거나, 영속성 컨텍스트에 엔티티를 저장하는 등의 작업을 수행한다.
+2. 모든 쓰기 작업이 성공했다면, `beforeCommit()` 메서드를 호출한다.
+   - `beforeCommit()` : 역시 ItemWriter 구현체에 따라 다르게 동작한다. 버퍼에 있는 내용을 그대로 파일에 flush 하거나, DB에 쓰는 등 실제 시스템에 반영하는 작업을 수행한다. 만약 문제가 발생한다면, `beforeCommit()` 을 호출하지 않기 때문에 데이터 정합성을 유지할 수 있다.
+3. 최종적으로 `commit()` 한다.
+
+## ClassifierCompositeItemWriter
+
+ClassifierCompositeItemWriter 는 Spring 의 Classifier를 사용해서, 규칙에 따라 ItemWriter를 선택하여 데이터 쓰기 작업을 수행한다.
+
+![img.png](img/img23.png)
+
+ClassifierCompositeItemWriter 는 내부적으로 아래와 같이 구현되어 있다.
+
+```java
+private Classifier<T, ItemWriter<? super T>> classifier = new ClassifierSupport<>(null);
+```
+
+`T` 타입의 데이터를 분류해서 각 데이터의 쓰기 작업을 수행할 담당 ItemWriter 를 지정한다.
+
+1. 청크 단위로 들어온 데이터를 하나씩 분류(`classify`)한다.
+2. 분류된 결과에 따라 적절한 위임 대상 ItemWriter에 item을 매핑한다.
+3. 청크의 모든 item이 분류되면, 각 ItemWriter가 자기에게 할당된 item을 처리한다.
+
+### ClassifierCompositeItemWriter 예시코드
+
+[MandateSystemLogProcessingConfig](src/main/java/com/system/batch/lesson/mandate/MandateSystemLogProcessingConfig.java)
+
