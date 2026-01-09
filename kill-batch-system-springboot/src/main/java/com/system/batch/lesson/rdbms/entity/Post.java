@@ -3,6 +3,7 @@ package com.system.batch.lesson.rdbms.entity;
 import jakarta.persistence.*;
 import lombok.Getter;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -22,7 +23,13 @@ public class Post {
     private String title;         // 게시물 제목
     private String content;       // 게시물 내용
     private String writer;        // 작성자
+    @Column(name = "blocked_at")
+    private LocalDateTime blockedAt;  // 차단 일시 필드 추가
 
     @OneToMany(mappedBy = "post")
     private List<Report> reports = new ArrayList<>();
+
+    public void addBlockedAt(LocalDateTime blockedAt) {
+        this.blockedAt = blockedAt;
+    }
 }

@@ -1441,3 +1441,40 @@ https://github.com/jojoldu/spring-batch-querydsl
 ### JpaPagingItemReader 예시 코드
 
 [JpaPagingItemReaderPostBlockBatchConfig.java](src/main/java/com/system/batch/lesson/rdbms/JpaPagingItemReaderPostBlockBatchConfig.java)
+
+## JpaItemWriter
+
+spring boot 로 spring batch 를 사용하는 경우, `spring-boot-starter-data-jpa` 의존성을 추가하면 `PlatformTransactionManager` 구현체가 `JpaTransactionManager` 로 변경된다.
+
+`JpaTransactionManager` 를 통해서, JPA 가 제공하는 영속성 컨텍스트, 1차 캐시, 더키체크 등을 사용할 수 있게 된다.
+
+만약 spring boot 를 사용하지 않고 스프링 배치와 jpa를 사용한다면, 아래와 같이 JpaTransactionManager를 직접 구성해야 한다.
+
+```java
+@Bean
+public JpaTransactionManager transactionManager(EntityManagerFactory emf) {
+    return new JpaTransactionManager(emf);
+}
+```
+
+### JpaItemWriter 사용시 주의사항
+
+- ID 시퀀스 할당을 어떻게 할 것인가?
+  - Hibernate 는 성능 최적화를 위해서, 스퀀스 값을 여러 개 미리 할당받아 메모리에 저장해둔다.
+  - Hibernate 는 기본적으로 한번에 50개씩 할당받는다. 다만 아래와 같은 설정이 DB에 되어있어야 한다.
+    - ```SQL
+      ALTER SEQUENCE blocked_posts_id_seq INCREMENT BY 50;
+      ```
+  - 배치 작업에서 DB INSERT를 수행할 때, 시퀀스 조회 횟수를 최소하기 위해선 `allocationSize` 를 최대한 크게 잡아야한다.
+    - _단, DB의 `INCREMENT BY` 설정값이 너무크다면, 번호 공백이 생길 수도 있다는 점을 고려해야한다._
+- ID 할당에서 IDENTITY 전략 사용시 배치 처리 제약사항
+  - IDENTITY 전략 사용시, DB에서 자동으로 할당되는 ID값을 사용해야 한다. 따라서 JPA가 엔티티를 영속화하기 위해서는 반드시 INSERT 를 먼저 실행해야 한다.
+  - **이는 결과적으로, 모든 INSERT 가 개별적으로 실행되어야 함을 의미한다.**
+  - 따라서 Hibernate는 여러 개의 INSERT 문을 하나의 배치로 묶어서 처리할 수 없게 된다. 만약 성능이 중요하다면, SEQUENCE 전략을 권장한다.
+- 기존 엔티티를 수정하는 경우, 데이터를 읽기 위한 ItemReader로 `JpaCursorItemReader` 사용이 권장된다.
+  - 위에서 설명했듯, `JpaPagingItemReader` 는 데이터를 읽기 전에 내부적으로 entityManager.flush() 를 수행하기에 의도치않은 데이터 변경이 일어날 수 있다.
+
+### 예제 코드
+
+- 새로운 데이터 INSERT : [JpaItemWriterPostBlockBatchConfig.java](src/main/java/com/system/batch/lesson/rdbms/JpaItemWriterPostBlockBatchConfig.java)
+- 기존 데이터 UPDATE : [JpaItemWriterMergePostBlockBatchConfig.java](src/main/java/com/system/batch/lesson/rdbms/JpaItemWriterMergePostBlockBatchConfig.java)
