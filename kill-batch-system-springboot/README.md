@@ -1581,3 +1581,256 @@ private Classifier<T, ItemWriter<? super T>> classifier = new ClassifierSupport<
 
 [MandateSystemLogProcessingConfig](src/main/java/com/system/batch/lesson/mandate/MandateSystemLogProcessingConfig.java)
 
+# ItemStream
+
+ItemStream 은 Spring Batch 의 핵심 인터페이스로, 대부분의 ItemReader와 일부 ItemWriter 구현체에서 ItemStream 인터페이스를 공통적으로 구현하고 있다.
+
+```java
+public interface ItemStream {
+    default void open(ExecutionContext executionContext) throws ItemStreamException {}
+	
+    default void update(ExecutionContext executionContext) throws ItemStreamException {}
+	
+    default void close() throws ItemStreamException {}
+}
+```
+
+## ItemStream 의 역할
+
+- 자원 초기화 및 해제
+- 메타데이터 관리 및 상태 추적
+
+그럼 하나씩 ItemStream 의 기능을 알아본다.
+
+## ItemStream : 자원 초기화 및 해제
+
+- open() : 자원을 초기화할때 사용되는 메서드이다.
+- close() : 자원에 대한 사용을 끝내고 자원을 해제할 때 사용되는 메서드이다.
+
+![img.png](img/img24.png)
+
+ItemStream 의 `open()` 과 `close()` 는 Step 이 호출한다. (하기 다이어그램 참고)
+
+- 스텝 시작 직후 : `ItemStream.open()` 호출
+- 스텝 실행 완료시 : `ItemStream.close()` 호출
+
+![img.png](img/img25.png)
+
+## ItemStream : 메타 데이터 관리 및 상태 추적
+
+Spring Batch는 매 트랜잭션마다 현재 실행 상태를 메타데이터 저장소에 기록한다. 이것이 바로 ItemStream이 담당하는 메타데이터 관리의 핵심이다.
+
+### open() : 저장된 실행 정보 복원
+
+open() 메서드는 스텝 시작 시점에 호출되어, **작업을 실패한 시점부터 이어서 실행할 수 있도록 상태를 복원하는 역할**을 한다.
+
+```java
+default void open(ExecutionContext executionContext) throws ItemStreamException {
+}
+```
+
+위와 같이 `open()` 메서드는 파라미터로 `ExecutionContext` 를 받는다. `ExecutionContext` 는 이전 스텝에 대한 실행 정보가 담겨져있고, ItemStream 구현체들은 이 `ExecutionContext`를 사용해 자신의 이전 상태를 복원한다.
+
+```java
+//FlatFileItemReader의 부모 클래스인 AbstractItemCountingItemStreamItemReader의 open() 메서드 예시
+public void open(ExecutionContext executionContext) throws ItemStreamException {
+    //...
+    
+    //최대 몇개의 아이템을 읽을 것인지(READ_COUNT_MAX)에 대한 값 복원
+    if (executionContext.containsKey(getExecutionContextKey(READ_COUNT_MAX))) {
+        maxItemCount = executionContext.getInt(getExecutionContextKey(READ_COUNT_MAX));
+    }
+    
+    //...
+
+    //이전 실행에서 몇개의 아이템을 읽었는지(READ_COUNT)에 대한 값 복원
+    int itemCount = 0;
+    if (executionContext.containsKey(getExecutionContextKey(READ_COUNT))) {
+        itemCount = executionContext.getInt(getExecutionContextKey(READ_COUNT));
+    }
+    
+    //...
+    
+    //이전 실행에서 읽었던 곳까지 jump
+    if (itemCount > 0 && itemCount < maxItemCount) {
+        try {
+            jumpToItem(itemCount); //readLine() 을 반복 호출해서, itemCount까지 점프한다.
+        }
+        catch (Exception e) {
+            throw new ItemStreamException("Could not move to stored position on restart", e);
+        }
+    }
+
+    currentItemCount = itemCount;
+}
+```
+
+`JdbcCursorItemReader` 도 위와 유사하게 동작한다. 다만 `jumpToItem()` 호출시, 첫번째 row에 위치한 커서를 하나씩 다음 row로 이동시켜 jump하게 된다.
+
+![img.png](img/img26.png)
+
+`JdbcPagingItemReader` 같은 경우는, 하기와 같이 pageSize 와 itemIndex 만 있으면 어떤 페이지의 어떤 위치부터 읽어야 하는지 수식 계산으로 알아낼 수 있기 때문에, 재시작 지점을 한번에 알아낼 수 있어 효율적이다.
+
+```java
+@Override
+protected void jumpToItem(int itemIndex) throws Exception {
+   this.lock.lock();
+   try {
+      page = itemIndex / pageSize;
+      current = itemIndex % pageSize;
+   }
+   finally {
+      this.lock.unlock();
+   }
+   ...
+}
+```
+
+### update() : 상태 저장
+
+update() 메서드는 **현재 작업이 어디까지 진행되었는지를 저장**한다. 이렇게 저장된 정보가 `open()` 에 의해 사용되어, 작업이 실패했을 때 정확한 재시작 지점을 파악하는데 사용된다.
+
+```java
+default void update(ExecutionContext executionContext) throws ItemStreamException {
+}
+```
+
+update() 메서드 역시 `ExecutionContext` 를 파라미터로 받는다. ItemStream 구현체들은 update() 메서드에서 해당 `ExecutionContext` 에 자신의 현재 실행 정보를 저장한다.
+
+update() 메서드는 매 트랜잭션의 커밋 직전에 호출된다. 단, 처리 도중 예외가 발생하여 트랜잭션이 롤백되는 경우에는 호출되지 않는다. 이는 실패한 처리 내용이 실행 정보에 반영되는 것을 방지한다.
+
+그리고 `ExecutionContext` 에 기록한 정보는 Step이 안전하게 메타데이터 저장소에 보관한다.
+
+![img.png](img/img27.png)
+
+이에 대한 예시로, AbstractItemCountingItemStreamItemReader의 update() 메서드를 보자.
+
+```java
+//AbstractItemCountingItemStreamItemReader의 update() 예시
+@Override
+public void update(ExecutionContext executionContext) throws ItemStreamException {
+    //...
+
+    //현재까지 읽은 item 개수 저장
+    executionContext.putInt(getExecutionContextKey(READ_COUNT), currentItemCount);
+
+    if (maxItemCount < Integer.MAX_VALUE) {
+        executionContext.putInt(getExecutionContextKey(READ_COUNT_MAX), maxItemCount); //읽어들일 수 있는 최대 item 개수 저장
+    }
+
+    //...
+}
+```
+
+> #### 재시작 불가 사례: RedisItemReader
+> 
+> `RedisItemReader` 는 재시작을 지원하지 않는다. **SCAN 명령의 순서 불일치 때문이다.**
+
+지금까지 살펴본 내용을 정리하자면 하기와 같다.
+
+![img.png](img/img28.png)
+
+### `CompositeItemReader` 의 ItemStream 처리
+
+```java
+//CompositeItemReader 내부코드 예시
+
+@Override
+public void open(ExecutionContext executionContext) throws ItemStreamException {
+    for (ItemStreamReader<? extends T> delegate : delegates) {
+       delegate.open(executionContext);
+    }
+}
+
+@Override
+public void update(ExecutionContext executionContext) throws ItemStreamException {
+    if (this.currentDelegate != null) {
+        this.currentDelegate.update(executionContext);
+    }
+}
+
+@Override
+public void close() throws ItemStreamException {
+    for (ItemStreamReader<? extends T> delegate : delegates) {
+        delegate.close();
+    }
+}
+```
+
+![img.png](img/img29.png)
+
+Spring Batch의 스텝이 CompositeItemReader의 open(), update(), close() 메서드를 호출하면, CompositeItemReader는 이를 자신이 가진 위임 대상 ItemReader에게 전달(bypass)한다.
+
+> Spring Batch 5.2.1까지의 CompositeItemReader와 CompositeItemWriter의 close()메소드는, 여러 위임 대상 중 하나의 close() 에서 예외 발생시, 나머지 위임 대상의 close() 가 실행되지 않는 심각한 문제가 있었다.
+> 
+> 이로 인해 자원 누수가 발생하였으나, 5.2.2 버전에서 해소되었다.
+
+### ItemStream 수동 설정
+
+스텝 빌더를 통해, ItemStream 구현체를 직접 설정할 수 있다.
+
+```java
+@Bean
+public Step systemLogProcessingStep() {
+    return new StepBuilder("systemLogProcessingStep", jobRepository)
+            .<SystemLog, SystemLog>chunk(10, transactionManager)
+            .reader(systemLogProcessingReader())
+            .writer(classifierWriter())
+            .stream(criticalLogWriter()) // ItemStream 구현체 직접 전달 (criticalLogWriter 에서 ItemStream 인터페이스를 구현하고 있음)
+            .stream(normalLogWriter()) // ItemStream 구현체 직접 전달 (normalLogWriter 에서 ItemStream 인터페이스를 구현하고 있음)
+            .build();
+}
+```
+
+이렇게 직접 설정시 아래 빌더 메서드에 의해 설정되고, 스텝에 등록된 ItemStream 구현체들은 Spring Batch 스텝에 의해 open(), update(), close() 메서드가 자동으로 호출된다.
+
+```java
+public B stream(ItemStream stream) {
+    streams.add(stream);
+    return self();
+}
+```
+
+### ItemStream 자동 등록 메커니즘
+
+만약 위와 같이 스텝 빌더에서 ItemStream 을 직접 설정하지 않는다면, **`reader()`, `writer()`, `processor()` 메서드로 전달한 컴포넌트가 ItemStream도 구현하고 있는지 확인하여 자동으로 등록한다.**
+
+이는 빌드(`build()`) 시점에 이루어진다.
+
+![img.png](img/img30.png)
+
+### ItemStream 을 구현한 컴포넌트를 `@StepScope` 로 사용시 주의사항
+
+아래와 같이 Bean 메서드의 반환 타입을 인터페이스로 지정하면, JDK Dynamic Proxy 에 의해 ItemStream 구현이 누락된다.
+
+```java
+/**
+ * ItemStream 가 구현된 ItemReader 를 ItemReader 인터페이스 타입으로 반환 처리
+ */
+@Bean
+@StepScope //프록시 객체로 생성
+public ItemReader<SuspiciousDevice> cafeSquadReader() {
+    //...
+    //return MongoCursorItemReader -> ItemStream 가 구현되어 있다.
+}
+```
+
+JDK Dynamic Proxy는 **메서드 반환 타입으로 선언된 인터페이스(`ItemReader`)만을 구현한 프록시 객체를 생성**한다.
+
+따라서 MongoCursorItemReader가 ItemStream을 구현하고 있더라도, 생성된 프록시 객체는 ItemStream 인터페이스를 아예 구현하지 않는 별개의 객체가 되어버린다.
+
+이로 인해, 스텝 빌더는 해당 객체를 **ItemStream과 무관한 것으로 취급하여 ItemStream 등록을 하지 않는다.** 결과적으로 open(), update(), close() 메서드가 호출되지 않는다.
+
+그렇기에, ItemStream가 구현된 컴포넌트를 Bean으로 등록할때는 반드시 구체 구현 클래스 타입으로 반환 타입을 설정해야 한다.
+
+```java
+/**
+ * MongoCursorItemReader 라는 ItemStream 인터페이스의 구현 클래스로 반환 타입을 설정했기에 문제없다.
+ */
+@Bean
+@StepScope //프록시 객체로 생성
+public MongoCursorItemReader<SuspiciousDevice> cafeSquadReader() {
+    //...
+    //return MongoCursorItemReader -> ItemStream 가 구현되어 있다.
+}
+```
