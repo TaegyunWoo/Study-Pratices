@@ -1834,3 +1834,380 @@ public MongoCursorItemReader<SuspiciousDevice> cafeSquadReader() {
     //return MongoCursorItemReader -> ItemStream 가 구현되어 있다.
 }
 ```
+
+# ItemProcessor 의 데이터 처리 방식
+
+## 1) `null` 반환을 통한 데이터 필터링 vs 데이터 검증을 통한 실패 처리
+
+ItemProcessor의 `process()` 메서드가 `null`을 반환하면 해당 item은 ItemWriter로 전달되는 Chunk에서 완전히 제외된다.
+
+이 필터링 과정은 구체적으로 하기와 같이 진행된다.
+
+1. Spring Batch는 먼저 지정된 청크 사이즈만큼 `read()` 메서드를 호출하여 input chunk를 생성한다.
+2. 생성된 input chunk의 각 item에 대해 ItemProcessor의 `process()` 메서드를 호출한다.
+3. 이 과정에서 `process()`가 `null`을 반환한 item은 최종 output chunk에서 제외된다.
+4. 결과적으로 ItemWriter에 전달되는 output chunk의 크기는 input chunk의 크기보다 작거나 같아진다.
+
+![img.png](img/img31.png)
+
+대표적인 필터링 시나리오는 아래와 같다.
+
+- 유효하지 않은 데이터 제거 (비정상적인 금액, 잘못된 주문상태 등)
+- 처리가 불필요한 데이터 제외 (휴면계정, 탈퇴회원 등)
+- 특정 조건에 맞지 않는 데이터 제외 (기준금액 이하 거래, 특정 상태의 주문 등)
+
+### 데이터 필터링 예시 코드
+
+```java
+@Slf4j
+public class ExecutionerProcessor implements ItemProcessor<Command, Command> {
+    @Override
+    public Command process(Command command) {
+        // 시스템 파괴 명령어 실행자는 처단
+        if (command.getCommandText().contains("rm -rf /") ||
+            command.getCommandText().contains("kill -9")) {
+            log.info("☠️ {}의 {} -> 시스템 파괴자 처단 완료. 기록에서 말살.",
+                command.getUserId(),
+                command.getCommandText());
+            return null; //필터링
+        }
+
+        // sudo 권한 남용자는 처단
+        if (command.isSudoUsed() &&
+            command.getTargetProcess().contains("system")) {
+            log.info("☠️ {}의 sudo {} -> 권한 남용자 처단 완료. 기록에서 抹殺.",
+                command.getUserId(),
+                command.getCommandText());
+            return null; //필터링
+        }
+
+        log.info("⚔️ {}의 {} -> 시스템 준수자 생존. 최종 기록 허가.",
+            command.getUserId(),
+            command.getCommandText());
+        return command; //필터링X
+    }
+}
+```
+
+위 코드는 아래와 같이 동작하게 된다.
+
+```text
+[Step 시작]
+
+(원본 명령어 로그)
+1. ItemReader    → [
+   {userId: "dev01", commandText: "ls -al", isSudoUsed: false},
+   {userId: "kill9", commandText: "rm -rf /", isSudoUsed: true},
+   {userId: "dev02", commandText: "grep kill.log", isSudoUsed: false},
+   {userId: "kill9", commandText: "kill -9", isSudoUsed: true}
+] 
+
+2. ItemProcessor → userId "kill9"의 치명적 명령어들 `null` 반환 (처단됨)
+
+
+3. 최종 output Chunk    → [
+   {userId: "dev01", commandText: "ls -al", isSudoUsed: false},
+   {userId: "dev02", commandText: "grep log", isSudoUsed: false}
+]
+
+4. ItemWriter    → 선량한 개발자들의 명령어만 기록에 남음
+```
+
+### ValidatingItemProcessor
+
+Spring Batch에서는 이러한 `null` 반환 방식을 활용해 데이터를 검증하는 ItemProcessor 구현체를 제공한다. 그것이 바로 ValidatingItemProcessor 이다.
+
+ValidatingItemProcessor 는 내부적으로 하기와 같은 **Validator를 사용하여 데이터 필터링을 수행**한다.
+
+```java
+public interface Validator<T> {
+    void validate(T value) throws ValidationException;
+}
+```
+
+만약 데이터가 검증 조건을 만족하지 못하면, `ValidationException` 을 던지도록 구현하면 된다.
+
+아래는 사용 예시이다.
+
+```java
+/**
+ * ValidatingItemProcessor 에서 사용할 Validator 구현체
+ */
+import org.springframework.batch.item.validator.Validator;
+import org.springframework.batch.item.validator.ValidationException;
+
+public class CommandValidator implements Validator<Command> {
+    @Override
+    public void validate(Command command) throws ValidationException {
+        if (command.getCommandText().contains("rm -rf /") || 
+            command.getCommandText().contains("kill -9")) {
+            //하기 예외를 던져, 필터링한다.
+            throw new ValidationException(
+                "☠️ " + command.getUserId() + 
+                "의 " + command.getCommandText() + 
+                " → 시스템 파괴 명령어 감지. 처단.");
+        }
+        
+        if (command.isSudoUsed() && 
+            command.getTargetProcess().contains("system")) {
+            //하기 예외를 던져, 필터링한다.
+            throw new ValidationException(
+                "☠️ " + command.getUserId() + 
+                "의 sudo " + command.getCommandText() + 
+                " → 권한 남용 감지. 처단.");
+        }
+    }
+}
+
+@Configuration
+public class JobConfiguration {
+    @Bean
+    public ItemProcessor<Command, Command> commandProcessor(
+        Validator<Command> commandValidator
+    ) {
+        ValidatingItemProcessor<Command> processor = new ValidatingItemProcessor<>(commandValidator);
+        processor.setFilter(true); // ValidationException 발생시 null을 반환하여 필터링을 수행하도록 설정
+        //processor.setFilter(false); // ValidationException 발생시 예외가 상위로 전달되어 Step이 실패한다.
+        return processor;
+    }
+    
+    @Bean
+    public Validator<Command> commandValidator() {
+        return new CommandValidator();
+    }
+}
+```
+
+만약 `processor.setFilter(false)` 로 설정시, ValidationException 예외가 상위로 전달되어 Step이 실패하게 된다.
+
+![img.png](img/img32.png)
+
+## 2) 데이터 변환
+
+ItemReader 에서 읽어온 객체를 비즈니스 요구사항에 맞춰 다른 타입으로 변환해줘야 하는 경우에도 ItemProcessor가 사용될 수 있다.
+
+```java
+public interface ItemProcessor<I, O> {
+    @Nullable
+    O process(@NonNull I item) throws Exception;
+}
+```
+
+위 ItemProcessor 인터페이스에서 제네릭 타입을 보자.
+
+- `I` : ItemReader 로부터 읽어온 데이터 타입
+- `O` : ItemWriter로 전달할 데이터 타입
+
+이는 Spring Batch 스텝의 데이터 흐름을 결정하는데, 스텝빌더를 사용할때 `.<Input, Output>chunk()` 과 같이 메서드를 호출했었을 것이다.
+
+여기서 `Input` 과 `Output` 제네릭 타입은 ItemProcessor의 제네릭 타입 `I`, `O`와 아래와 같은 관계를 갖는다.
+
+- `Input` : ItemReader 에서 읽은 데이터가 ItemProcessor의 입력 `I` 로 전달된다.
+- `Output` : ItemProcessor 에서 변환된 데이터 `O` 가 ItemWriter의 입력으로 전달된다.
+
+### 데이터 변환 예시 코드
+
+```java
+/**
+ * ItemReader 에서 읽은 데이터 타입으로, ItemProcessor에 전달된다.
+ */
+public class SystemLog {
+    private Long userId;      // 실행한 사용자
+    private String rawCommand;  // 원본 명령어
+    private LocalDateTime executedAt; // 실행 시간
+}
+
+/**
+ * ItemProcessor에서 SystemLog를 본 클래스타입으로 변환한다. 이를 ItemWriter에 전달한다. 
+ */
+public class CommandReport {
+    private Long executorId;    // 처리된 사용자 ID
+    private String action;      // 처리된 행동 설명
+    private String severity;    // 위험 등급
+    private LocalDateTime timestamp; // 실행 시간
+}
+
+/**
+ * SystemLog -> CommandReport 변환
+ */
+@Slf4j
+public class CommandAnalyzer implements ItemProcessor<SystemLog, CommandReport> {
+    @Override
+    public CommandReport process(SystemLog systemLog) {
+        CommandReport report = new CommandReport();
+        report.setExecutorId(systemLog.getUserId());
+        report.setTimestamp(systemLog.getExecutedAt());
+
+        // 명령어 분석 및 위험도 평가 💀
+        if (systemLog.getRawCommand().contains("rm -rf")) {
+            report.setAction("시스템 파일 제거 시도");
+            report.setSeverity("CRITICAL");
+        } else if (systemLog.getRawCommand().contains("kill -9")) {
+            report.setAction("프로세스 강제 종료 시도");
+            report.setSeverity("HIGH");
+        } else {
+            report.setAction(analyzeCommand(systemLog.getRawCommand()));
+            report.setSeverity("LOW");
+        }
+
+        log.info("⚔️ {}의 행적 분석 완료: {}", 
+                systemLog.getUserId(), 
+                report.getAction());
+        return report;
+    }
+
+    private String analyzeCommand(String command) {
+        // 일반 명령어 분석 로직 💀
+        return "일반 시스템 명령어 실행";
+    }
+}
+```
+
+## 3) 데이터 보강
+
+때로는 외부 시스템이나 DB에서 추가 정보를 가져와 기존 데이터를 보강해야 하는 경우처럼, 읽어온 데이터만으로는 충분하지 않을 수 있다.
+
+데이터 보강 시나리오는 아래와 같다.
+
+- 거래 내역에 실시간 환율 적용 (외환 API를 통한 원화 환산)
+- 주문 데이터에 재고 현황 추가 (창고 시스템 API 조회)
+- IP 주소에 지역 정보 보강 (GeoIP API를 통한 국가/도시 정보)
+
+### 데이터 보강 예시 코드
+
+```java
+public class SystemLog {
+    private Long userId;      // 실행한 사용자
+    private String rawCommand;  // 원본 명령어
+    private LocalDateTime executedAt; // 실행 시간
+    
+    // API 호출로 보강될 필드들
+    private String serverName;  // 서버 정보
+    private String processName; // 프로세스 정보  
+    private String riskLevel;   // 위험 등급
+}
+
+@Slf4j
+@RequiredArgsConstructor
+public class SystemLogEnrichItemProcessor implements ItemProcessor<SystemLog, SystemLog> {
+    private final ObservabilityApiClient observabilityApiClient;
+
+    @Override
+    public SystemLog process(SystemLog systemLog) {
+        // 입력: SystemLog{userId=666, rawCommand='kill -9 1234', executedAt=2025-01-15T10:30:00, serverName=null, processName=null, riskLevel=null}
+
+        // 외부 API 호출해서 서버 정보 보강 💀
+        ServerInfo serverInfo = observabilityApiClient.getServerInfo(systemLog.getUserId());
+
+        // 기존 SystemLog 객체에 보강된 정보 추가 💀
+        systemLog.setServerName(serverInfo.getHostName());
+        systemLog.setProcessName(serverInfo.getCurrentProcess());
+        systemLog.setRiskLevel(calculateRiskLevel(serverInfo, systemLog.getRawCommand()));
+
+        // 출력: SystemLog{userId=666, rawCommand='kill -9 1234', executedAt=2025-01-15T10:30:00, serverName='chaos-api-05', processName='system-reaper', riskLevel='HIGH'}
+        return systemLog;
+    }
+}
+```
+
+### `ItemWriteListener.beforeWrite()`를 통한 외부 시스템 통신 최적화
+
+데이터 보강을 위해 외부 API를 호출하는 경우, 심각한 성능 이슈가 발생할 수 있다.
+
+ItemProcessor의 `process()` 메서드는 **아이템을 하나씩 처리하는 단위성 작업**이다. 이런 특성때문에, Item의 개수만큼 API 호출이 발생할 수 있다.
+
+![img.png](img/img33.png)
+
+이 문제를 ItemWriteListener 의 `beforeWrite()` 메서드로 해결할 수 있다.
+
+```java
+default void beforeWrite(Chunk<? extends S> items) {
+}
+```
+
+`beforeWrite()` 메서드는 위와 같이 청크 전체를 입력으로 받는다. 따라서 데이터 보강을 위한 API 호출을 `beforeWrite()` 에서 수행하면 통신 횟수를 극적으로 줄일 수 있다.
+
+아래는 청크단위로 벌크API를 호출하여 최적화하는 예시이다.
+
+```java
+@Slf4j
+@RequiredArgsConstructor
+public class SystemLogEnrichListener implements ItemWriteListener<SystemLog> {
+    private final ObservabilityApiClient observabilityApiClient;
+
+    @Override
+    public void beforeWrite(Chunk<? extends SystemLog> items) {
+        List<Long> userIds = items.getItems().stream()
+            .map(SystemLog::getUserId)
+            .toList();
+
+        // 벌크 API 호출: 청크 단위로 서버 정보를 한 번에 조회 💀
+        Map<Long, ServerInfo> serverInfoMap = observabilityApiClient.fetchServerInfos(userIds);
+
+        // 조회된 정보로 각 SystemLog 보강 💀
+        items.getItems().forEach(systemLog -> {
+            ServerInfo serverInfo = serverInfoMap.get(systemLog.getUserId());
+            if (serverInfo != null) {
+                systemLog.setServerName(serverInfo.getHostName());
+                systemLog.setProcessName(serverInfo.getCurrentProcess());
+                systemLog.setRiskLevel(calculateRiskLevel(serverInfo, systemLog.getRawCommand()));
+            }
+        });
+
+        log.info("💀 청크 내 {}건의 SystemLog 데이터 보강 완료", items.size());
+    }
+}
+```
+
+> ItemWriter 에서 API 호출을 통한 데이터 보강과 데이터 쓰기까지 한번에 수행한다면?
+> 
+> 가능은 하겠지만, ItemWriter 는 읽기가 아닌 쓰기 작업을 위한 컴포넌트이다. 따라서 단일 책임 원칙에 어긋난다.
+
+## CompositeItemProcessor : 여러 ItemProcessor 사용하기
+
+CompositeItemProcessor 는 여러 위임 대상 ItemProcessor를 순차적으로 실행하는 위임 ItemProcessor 구현체다.
+
+**각 ItemProcessor는 순차적으로 실행되며, 이전 ItemProcessor의 반환값이 다음 ItemProcessor의 입력으로 전달된다. 따라서 타입의 연속성이 매우 중요하다.**
+
+![img.png](img/img34.png)
+
+빨간 점선이 보여주듯이 앞단 ItemProcessor의 출력 타입이 다음 ItemProcessor의 입력 타입과 일치해야 한다.
+
+CompositeItemProcessor를 사용하는 방법에는 하기 2가지가 존재한다.
+
+- 생성자에 위임 대상 ItemProcessor들을 전달
+- `CompositeItemProcessorBuilder.delegates()` 메서드를 통해 설정
+
+```java
+// CompositeItemProcessor 사용
+public CompositeItemProcessor(ItemProcessor<?, ?>... delegates) {
+    this(Arrays.asList(delegates));
+}
+
+// CompositeItemProcessorBuilder 사용
+public CompositeItemProcessorBuilder<I, O> delegates(List<? extends ItemProcessor<?, ?>> delegates) {
+    this.delegates = delegates;
+
+    return this;
+}
+```
+
+## ClassifierCompositeItemProcessor : 아이템을 처리할 ItemProcessor 라우팅
+
+ClassifierCompositeItemProcessor는 `Spring의 Classifier`를 사용해 아이템을 처리할 ItemProcessor를 라우팅한다.
+
+이때 주의할 점은 "`Classifier`가 반환하는 모든 ItemProcessor의 입력 타입과 출력 타입"이 "ClassifierCompositeItemProcessor 에서 선언된 타입"과 일치해야 한다는 것이다.
+
+```java
+// ClassifierCompositeItemProcessor 사용
+public void setClassifier(Classifier<? super I, ItemProcessor<?, ? extends O>> classifier) {
+    this.classifier = classifier;
+}
+
+// ClassifierCompositeItemProcessorBuilder 사용
+public ClassifierCompositeItemProcessorBuilder<I, O> classifier(
+        Classifier<? super I, ItemProcessor<?, ? extends O>> classifier) {
+    this.classifier = classifier;
+    return this;
+}
+```
