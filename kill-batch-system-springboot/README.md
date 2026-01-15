@@ -2404,3 +2404,260 @@ public Step terminationRetryStep() {
       }
     }
     ```
+    
+### ItemProcessor 에서의 Retry 횟수 관리
+
+ItemProcessor와 ItemWriter 는 서로 동일한 RetryTemplate을 사용하지만, **둘의 동작방식은 완전히 다르다.**
+
+결론부터 이야기한다면 아래와 같다.
+
+- ItemProcessor : 재시도 횟수를 **아이템 단위로 개별 관리**한다.
+- ItemWriter : 재시도 횟수를 **청크 단위로 관리**한다.
+
+하기 예제 코드를 보고 그 차이점을 알아보자.
+
+[TerminationRetryForItemProcessorConfig.java](src/main/java/com/system/batch/lesson/retry/TerminationRetryForItemProcessorConfig.java) 에서도 하기 코드를 확인 가능하니 참고하자.
+```java
+/**
+ * ItemProcessor와 ItemWriter의 재시도 동작 방식의 차이점을 비교하기 위한 예시 코드
+ */
+@Configuration
+@RequiredArgsConstructor
+public class TerminationRetryConfig {
+    private final JobRepository jobRepository;
+    private final PlatformTransactionManager platformTransactionManager;
+
+    @Bean
+    public Job terminationRetryJob() {
+        return new JobBuilder("terminationRetryJob", jobRepository)
+            .start(terminationRetryStep())
+            .build();
+    }
+
+    /**
+     * 스텝 설정
+     */
+    @Bean
+    public Step terminationRetryStep() {
+        return new StepBuilder("terminationRetryStep", jobRepository)
+            .<Scream, Scream>chunk(3, platformTransactionManager)
+            .reader(terminationRetryReader())
+            .processor(terminationRetryProcessor())
+            .writer(terminationRetryWriter())
+            .faultTolerant() // 내결함성 기능 ON
+            .retry(TerminationFailedException.class) // 재시도 대상 예외 추가
+            .retryLimit(3) //실행 최대 횟수
+            .listener(retryListener()) //리스너 등록
+            .build();
+    }
+
+    /**
+     * 기본 ItemReader
+     */
+    @Bean
+    public ListItemReader<Scream> terminationRetryReader() {
+        return new ListItemReader<>(List.of(
+            Scream.builder()
+                .id(1)
+                .scream("멈춰")
+                .processMsg("멈추라고 했는데 안 들음.")
+                .build(),
+            Scream.builder()
+                .id(2)
+                .scream("제발")
+                .processMsg("애원 소리 귀찮네.")
+                .build(),
+            Scream.builder()
+                .id(3)
+                .scream("살려줘")
+                .processMsg("구조 요청 무시.")
+                .build(),
+            Scream.builder()
+                .id(4)
+                .scream("으악")
+                .processMsg("디스크 터지며 울부짖음.")
+                .build(),
+            Scream.builder()
+                .id(5)
+                .scream("끄아악")
+                .processMsg("메모리 붕괴 비명.")
+                .build(),
+            Scream.builder()
+                .id(6)
+                .scream("System.exit(-666)")
+                .processMsg("초살 프로토콜 발동.")
+                .build()
+        )) {
+            @Override
+            public Scream read() {
+                Scream scream = super.read();
+                if(scream == null) {
+                    return null;
+                }
+                System.out.println("🔥🔥🔥 [ItemReader]: 처형 대상 = " + scream);
+                return scream;
+            }
+        };
+    }
+
+    /**
+     * 조건에 따라 재시도 대상 예외를 터뜨리는 ItemProcessor
+     */
+    @Bean
+    public ItemProcessor<Scream, Scream> terminationRetryProcessor() {
+        return new ItemProcessor<>() {
+            private static final int MAX_PATIENCE = 3;
+            private int mercy = 0;  // 자비 카운트
+
+            @Override
+            public Scream process(Scream scream) throws Exception {
+                System.out.print("🔥🔥🔥 [ItemProcessor]: 처형 대상 = " + scream);
+
+                //id가 3인 경우, 첫번재 시도에서만 예외가 발생
+                if (scream.getId() == 3 && mercy < MAX_PATIENCE) {
+                    mercy ++;
+                    System.out.println(" -> ❌ 처형 실패.");
+                    throw new TerminationFailedException("처형 거부자 = " + scream); //MARK: 재시도 대상 예외 발생
+                } else {
+                    System.out.println(" -> ✅ 처형 완료(" + scream.getProcessMsg() + ")");
+                }
+
+                return scream;
+            }
+        };
+    }
+
+    /**
+     * 기본 ItemWriter
+     */
+    @Bean
+    public ItemWriter<Scream> terminationRetryWriter() {
+        return items -> {
+            System.out.println("🔥🔥🔥 [ItemWriter]: 처형 기록 시작. 기록 대상 = " + items.getItems());
+
+            for (Scream scream : items) {
+                System.out.println("🔥🔥🔥 [ItemWriter]: 기록 완료. 처형된 아이템 = " + scream);
+            }
+        };
+    }
+
+    /**
+     * RetryListener
+     */
+    @Bean
+    public RetryListener retryListener() {
+        return new RetryListener() {
+            @Override
+            public <T, E extends Throwable> void onError(RetryContext context, RetryCallback<T, E> callback, Throwable throwable) {
+                System.out.println("💀💀💀 킬구형: 이것 봐라? 안 죽네? " + throwable + " (현재 총 시도 횟수=" + context.getRetryCount() + "). 다시 처형한다.\n");
+            }
+        };
+    }
+
+    public static class TerminationFailedException extends RuntimeException {
+        public TerminationFailedException(String message) {
+            super(message);
+        }
+    }
+
+    @Getter
+    @Builder
+    public static class Scream {
+        private int id;
+        private String scream;
+        private String processMsg;
+
+        @Override
+        public String toString() {
+            return id + "_" + scream;
+        }
+    }
+}
+```
+
+위 코드의 ItemProcessor를 보면, id가 3인 아이템(`살려줘`)에서 의도적으로 예외를 발생시키도록 설계되었다. 다만 자비 카운트(`mercy`)가 MAX_PATIENCE(`3`)보다 같거나 커지면 예외를 발생시키지 않는다. 
+
+즉 첫번째/두번째/세번째 시도에서 모두 예외가 발생하고, `.retryLimit(3)` 로 설정되어 있어 네번째 시도는 수행되지 않고 예외가 발생한다.
+
+해당 잡에 대한 실행결과는 아래와 같다.
+
+```text
+🔥🔥🔥 [ItemReader]: 처형 대상 = 1_멈춰
+🔥🔥🔥 [ItemReader]: 처형 대상 = 2_제발
+🔥🔥🔥 [ItemReader]: 처형 대상 = 3_살려줘
+🔥🔥🔥 [ItemProcessor]: 처형 대상 = 1_멈춰 -> ✅ 처형 완료(멈추라고 했는데 안 들음.)
+🔥🔥🔥 [ItemProcessor]: 처형 대상 = 2_제발 -> ✅ 처형 완료(애원 소리 귀찮네.)
+🔥🔥🔥 [ItemProcessor]: 처형 대상 = 3_살려줘 -> ❌ 처형 실패.
+💀💀💀 킬구형: 이것 봐라? 안 죽네? com.system.batch.killbatchsystem.TerminationRetryConfig$TerminationFailedException: 처형 거부자 = 3_살려줘 (현재 총 시도 횟수=1). 다시 처형한다.
+// ⚠️ 해설: 이 지점에서 롤백 발생 후 청크 처리 다시 시작
+
+🔥🔥🔥 [ItemProcessor]: 처형 대상 = 1_멈춰 -> ✅ 처형 완료(멈추라고 했는데 안 들음.)
+🔥🔥🔥 [ItemProcessor]: 처형 대상 = 2_제발 -> ✅ 처형 완료(애원 소리 귀찮네.)
+🔥🔥🔥 [ItemProcessor]: 처형 대상 = 3_살려줘 -> ❌ 처형 실패.
+💀💀💀 킬구형: 이것 봐라? 안 죽네? com.system.batch.killbatchsystem.TerminationRetryConfig$TerminationFailedException: 처형 거부자 = 3_살려줘 (현재 총 시도 횟수=2). 다시 처형한다.
+// ⚠️ 해설: 이 지점에서 롤백 발생 후 청크 처리 다시 시작
+
+🔥🔥🔥 [ItemProcessor]: 처형 대상 = 1_멈춰 -> ✅ 처형 완료(멈추라고 했는데 안 들음.)
+🔥🔥🔥 [ItemProcessor]: 처형 대상 = 2_제발 -> ✅ 처형 완료(애원 소리 귀찮네.)
+🔥🔥🔥 [ItemProcessor]: 처형 대상 = 3_살려줘 -> ❌ 처형 실패.
+💀💀💀 킬구형: 이것 봐라? 안 죽네? com.system.batch.killbatchsystem.TerminationRetryConfig$TerminationFailedException: 처형 거부자 = 3_살려줘 (현재 총 시도 횟수=3). 다시 처형한다.
+// ⚠️ 해설: 이 지점에서 롤백 발생 후 청크 처리 다시 시작
+
+🔥🔥🔥 [ItemProcessor]: 처형 대상 = 1_멈춰 -> ✅ 처형 완료(멈추라고 했는데 안 들음.)
+🔥🔥🔥 [ItemProcessor]: 처형 대상 = 2_제발 -> ✅ 처형 완료(애원 소리 귀찮네.)
+...AbstractStep         : Encountered an error executing step terminationRetryStep in job terminationRetryJob
+
+org.springframework.retry.RetryException: Non-skippable exception in recoverer while processing
+...
+```
+
+이 실행결과를 아래처럼 분석해볼 수 있다.
+
+1. ItemReader가 첫 3개의 아이템을 읽어들인다.
+2. ItemProcessor 시작
+   - 1번과 2번 아이템은 process 되지만, 아이템 3번에서 예외가 발생한다.
+3. 트랜잭션 롤백 및 청크 처리 재개
+   - 예외가 전파되면 Step은 **청크 트랜잭션을 롤백**시킨다.
+   - 그러나 내결함성 기능 덕분에 스텝은 포기하지 않고 **재시도**된다.
+4. 청크 재처리 시작
+   - 이미 읽어둔 아이템들로 1번 아이템부터 다시 process를 시도한다.
+   - **즉, ItemReader는 다시 호출되지 않는다.**
+5. 재시도 모두 실패 
+   - 모든 재시도가 실패한다.
+6. 결국 스텝 전체가 실패한다.
+
+ItemProcess 과정에서 예외가 발생하면, 청크단위로 Retry 하게 된다. **하지만 재시도 횟수는 청크단위가 아닌 아이템별로 관리되며, 예외가 발생한 아이템에 대해서만 재시도 횟수가 카운팅된다.**
+
+위 코드를 아래처럼 정리해볼 수 있다.
+
+|실행 횟수|아이템1 실패 횟수|아이템2 실패 횟수| 아이템3 실패 횟수            |
+|---|---|---|-----------------------|
+|1|0|0| 1                     |
+|2|0|0| 2                     |
+|3|0|0| 3 (retryLimit 까지 도달함) |
+
+그럼 아래와 같은 상황도 생각해볼 수 있다.
+
+1. 첫번째 실행에선 아이템 1을 대상으로 예외 발생
+2. 두번째 실행에서 아이템 2를 대상으로 예외 발생
+3. 세번째 실행에서 아이템 3을 대상으로 예외 발생
+4. 네번째 실행에서 다시 아이템 1을 대상으로 예외 발생
+5. ...
+
+위와 같이 번갈아가면서 실패하는 경우, **전체 재실행 횟수가 `retryLimit` 을 초과할 수 있다!** 왜냐하면, 아이템별로 실패 횟수를 관리하기 때문이다.
+
+| 실행 횟수 | 아이템1 실패 횟수 | 아이템2 실패 횟수 | 아이템3 실패 횟수 |
+|-------|------------|-----------|-----------|
+| 1     | 1          | 0         | 0         |
+| 2     | 1          | 1         | 0         |
+| 3     | 1          | 1         | 1         |
+| 4     | 2          | 1         | 1         |
+| 5     | 2          | 2         | 1         |
+| 6     | 2          | 2         | 2         |
+| 7     | 3 (retryLimit 까지 도달함)         | 2         | 2         |
+| 8     | 3 (retryLimit 까지 도달함)         | 3 (retryLimit 까지 도달함)          | 2         |
+| 9     | 3 (retryLimit 까지 도달함)         | 3 (retryLimit 까지 도달함)          | 3 (retryLimit 까지 도달함)          |
+
+따라서 위와 같이 총 9번의 재실행이 가능하게 된다. (아이템별 3번씩)
+
+// 이제 processorNonTransactional 설정쪽 내용 추가!!!
