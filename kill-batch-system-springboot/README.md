@@ -2246,3 +2246,161 @@ public ClassifierCompositeItemProcessorBuilder<I, O> classifier(
     return this;
 }
 ```
+
+# Spring Batch 의 Fault Tolerant (내결함성)
+
+스텝 실행 중 단 하나의 예외라도 발생한다면, Spring Batch는 기본적으로 **즉시 모든 실행을 중단하고 배치 잡 전체를 실패로 처리**한다.
+
+![img.png](img/img35.png)
+
+만약 1,000만 개의 데이터를 처리하다가, 단 한건의 오류로 작업을 실패시키는 경우가 있을 수 있다. 이 때문에 전체 배치를 다시 실행해야 한다면, 매우 비효율적인 일이 될 것이다.
+
+이런 상황을 방지하기 위해서, Spring Batch는 Fault Tolerant (내결함성) 기능을 제공한다.
+
+이를 활용하면 간단한 구성만으로도 재시도(Retry)와 건너뛰기(Skip)을 청크 지향처리에서 사용할 수 있다.
+
+구체적인 예시는 아래와 같다.
+
+- 일시적 네트워크 오류로 인한 DB 쓰기 실패 -> Retry 로 해결
+- 잘못된 형식의 데이터를 읽어 예외 발생 -> Skip 으로 해결
+
+> Tasklet 지향 처리는 Fault Tolerant (내결함성) 기능의 지원 대상이 아니다.
+> 
+> 왜냐하면 우리가 직접 `Tasklet.execute()` 를 작성할 때, 구현 코드에서 직접 `try-catch` 로 예외 핸들링이 가능하기 때문이다.
+
+Spring Batch 에서 제공하는 Fault Tolerant (내결함성) 기능에는 크게 두가지 Retry 와 Skip 이 있다.
+
+## Retry
+
+Retry 는 말 그대로 실패한 작업을 다시 시도하는 것을 의미한다. 이를 통해, 네트워크 오류 등 일시적인 오류 상황에서 매우 효과적인 해결책이 될 수 있다.
+
+### RetryTemplate : Retry 의 핵심 컴포넌트
+
+RetryTemplate 은 Spring Retry 프로젝트의 핵심 컴포넌트로, **작업이 실패하면 정해진 정책에 따라 다시 시도**한다.
+
+아래는 `RetryTemplate.execute()` 메서드의 내부 동작 원리를 단순화한 도표이다.
+
+![img.png](img/img36.png)
+
+위 도표와 같이, `RetryTemplate.execute()` 메서드는 하기 세 가지 핵심 구성요소를 조합하여 동작한다.
+
+- `canRetry()` : 재시도 가능 여부 판단
+  - `canRetry()` 를 통해, 재시도 가능 여부를 판단한다. 이 메서드는 사전에 정해진 재시도 정책을 기반으로 판단하게 된다.
+- `retryCallback()` : 재시도 핵심 로직 실행
+  - 정상적인 첫번째 시도나, 재시도시 본 메서드를 실행한다. 개발자가 작성한 핵심 비즈니스 로직 (`ItemProcessor.process()` , `ItemWriter.write()`) 이 해당 메서드에 의해 실행된다.
+  - **중요한 점은, 내결함성 기능이 활성화되면 해당 콜백이 최초 실행부터 재시도까지 모두 본 `retryCallback`을 통해 수행된다는 것이다.**
+- `recoveryCallback()` : 재시도 불가시 로직 실행
+  - 발생한 예외를 그대로 전파하거나 대체 로직을 수행한다.
+
+![img.png](img/img37.png)
+
+위 도표를 보면, ItemProcessor 와 ItemWriter 호출 로직이 RetryTemplate 의 `retryCallback` 안으로 패키징되는 것을 확인할 수 있다.
+
+#### RetryTemplate 의 관리 범위와 `ChunkProcessor`
+
+위에서, ItemProcessor 와 ItemWriter 호출 로직이 `retryCallback()` 에 담긴다고 설명했다.
+
+그럼 ItemReader 는 어디에 갔나? 라는 의문이 들 수 있다. 이를 이해하기 위해선, 청크 프로세스에 대해 알아야 한다.
+
+청크 프로세스는 크게 `ChunkProvider(읽기 담당)` 과 `ChunkProcessor(가공/쓰기담당)` 으로 나뉜다.
+- `ChunkProvider` (`ItemReader`): 아이템을 하나씩 읽어서 청크 단위(List)로 뭉친다.
+- `ChunkProcessor` (`ItemProcessor`, `ItemWriter`): 만들어진 청크(List)를 받아 가공하고 저장한다.
+
+**이때 RetryTemplate 이 감싸는 범위가 바로 `ChunkProcessor` 의 실행 시점이다.** 즉, 이미 읽기가 완료된 데이터를 가지고 작업을 시작하는 단계에서부터 RetryTemplate 이 관리한다.
+
+만약 ItemReader 도 RetryTemplate 에 포함된다면 아래와 같은 문제가 발생할 수 있다.
+
+- 굳이 비용이 비싼 데이터 읽기 작업을 재수행해야 한다. 이미 메모리에 로드되어 있는 것을 사용하면 되는데 말이다.
+- `JdbcCursorItemReader` 와 같이 커서 기반으로 데이터를 읽어온다면, Retry 하기가 매우 어렵다. 보통 커서를 뒤로 되돌리는 것은 DB에서 지원하지 않기 때문이다.
+- 메시지큐로부터 데이터를 읽은 경우, 한번 읽은 데이터를 다시 읽는 것이 아예 불가능할 수 있다.
+
+정리하자면, RetryTemplate 는 `ChunkProcessor` 실행 시점에서부터 `retryCallback` 로 감싸기 때문에, `ItemReader` 는 재시도 대상으로 관리되지 않는다고 할 수 있다.
+
+자세한 것은 아래 도표를 통해 확인해볼 수 있다. 하나의 청크 프로세스에 대한 설명으로, `ChunkProvider` 와 `ChunkProcessor` 그리고 `RetryTemplate` 간의 관계를 나타낸다.
+
+![img.png](img.png)
+
+> 다만, Spring Batch 6 부터는 ItemReader 에서도 재시도가 가능해졌다.
+
+### RetryPolicy : 재시도 정책 관리
+
+위에서 `RetryTemplate.execute()` 메서드의 내부에서 `canRetry()` 를 호출하여, 재시도 가능 여부를 판단한다고 했다.
+
+`canRetry()` 에서 재시도 정책을 확인하는데, 이때 사용되는 것이 바로 RetryPolicy 이다.
+
+별도 설정이 없을 경우, Spring Batch의 내결함성 기능은 `SimpleRetryPolicy` 라는 재시도 정책을 사용한다.
+
+#### SimpleRetryPolicy
+
+SimpleRetryPolicy는 다음의 두 조건을 바탕으로 재시도 가능 여부를 결정한다.
+
+- 발생한 예외가 "사전에 지정된 예외 유형"에 해당하는가.
+- "현재 재시도 횟수"가 "최대 허용 횟수"를 초과하지 않았는가.
+
+### Input Chunk 재활용을 통한, 내결함성 최적화
+
+![img.png](img/img37.png)
+
+위 다이어그램을 다시 보면, Rollback 되고 난 후에 input chunk가 RetryTemplate 에 전달되고 있는 것을 알 수 있다.
+
+Spring Batch 에서 **ItemReader 의 기본 규약은 FORWARD ONLY 이다. 즉, 한번 읽었던 데이터를 다시 읽는 것은 기본 설계 원칙에 위배**된다. 그렇기 때문에, Retry 를 하기 위해서 이전 데이터를 다시 ItemReader로 읽어올 순 없다.
+
+이 문제를 해결하기 위해, Spring Batch 는 청크 버퍼링을 사용한다. 내결함성 기능이 활성화된 경우, **ItemReader가 읽어들인 input chunk를 별도로 저장**해둔다.
+
+이 덕분에, 재시도가 필요한 경우 ItemReader 를 되감지 않고도 이미 읽어둔 Chunk를 그대로 재사용할 수 있게 된다.
+
+### Retry 예제 코드
+
+```java
+@Bean
+public Step terminationRetryStep() {
+    return new StepBuilder("terminationRetryStep", jobRepository)
+        .<Scream, Scream>chunk(3, transactionManager)
+        .reader(terminationRetryReader())
+        .processor(terminationRetryProcessor())
+        .writer(terminationRetryWriter())
+        .faultTolerant() // 내결함성 기능 ON
+        .retry(TerminationFailedException.class)   // 재시도 대상 예외 타입 추가 (해당 타입과 모든 하위 예외가 대상이 된다.)
+        .noRetry(SubFailedException.class) //TerminationFailedException 의 하위 예외 중, 재시도하지 않을 하위 예외 설정
+        .retryLimit(3) //총 재시도 횟수
+        .listener(retryListener())
+        .build();
+}
+```
+
+- `.faultTolerant()`
+  - 해당 스텝의 내결함성 기능을 활성화한다. 이를 통해, Retry나 Skip을 사용할 수 있게 된다.
+- `.retry()`
+  - 재시도를 수행할 예외 타입을 지정한다. 해당 예외가 발생했을 때, 재시도를 시도한다.
+  - 이렇게 예외 타입 지정시, 해당 타입을 상속한 모든 자식 예외들도 자동으로 재시도 대상에 포함된다. 
+- `.noRetry()`
+  - `.retry()` 로 지정한 예외 타입의 하위 타입 중, 재시도하지 않을 예외를 설정한다.
+  - `.noRetry()` 를 여러번 호출하여 다중 설정하는 것도 가능하다.
+- `.retryLimit()`
+  - "첫실행 + 재시도횟수" 를 제한한다. `.retryLimit(3)` 이라면, 첫실행을 제외한 2번까지 실제 재시도가 된다. _(기본값은 0이나, 첫실행은 된다.)_
+  - `.retryLimit()` 사용시, 반드시 `.retry()` 로 재시도 대상 예외 타입을 지정해야 한다.
+- `.listener()`
+  - 재시도 과정을 모니터링할 수 있는 리스너를 등록한다.
+  - 여기서 사용되는 리스너는 Spring Retry 프로젝트의 RetryListener 인터페이스 구현체로, 재시도의 전 과정을 후킹할 수 있는 메서드들을 제공한다.
+  - ```java
+    public interface RetryListener {
+      // 재시도 시작 전에 호출. false를 반환하면 재시도를 중단한다.
+      default <T, E extends Throwable> boolean open(RetryContext context, RetryCallback<T, E> callback) {
+          return true;
+      }
+
+      // 재시도 중 오류 발생할 때마다 호출
+      default <T, E extends Throwable> void onError(RetryContext context, RetryCallback<T, E> callback,
+              Throwable throwable) {
+      }
+
+      // 재시도 성공 시 호출
+      default <T, E extends Throwable> void onSuccess(RetryContext context, RetryCallback<T, E> callback, T result) {
+      }
+
+      // 모든 재시도가 끝난 후 호출 (성공/실패 여부와 무관)
+      default <T, E extends Throwable> void close(RetryContext context, RetryCallback<T, E> callback,
+              Throwable throwable) {
+      }
+    }
+    ```
