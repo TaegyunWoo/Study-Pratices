@@ -1207,6 +1207,41 @@ public interface LineAggregator<T> {
 
 ![img.png](img/img13.png)
 
+좀 더 내용을 자세히 설명하면 아래와 같다. (기본적으로 ItemStream 이 무엇인지 알아두어야 이해하기 쉽다.)
+
+기본적으로 Spring Batch 는 청크 단위로 커넥션풀에서 커넥션을 가져오고, ItemReader/ItemProcessor/ItemWriter 에서 사용한다. 그리고 트랜잭션은 청크단위마다 ItemReader/ItemProcessor/ItemWriter 에서 공용으로 사용하고 커밋한다.
+
+1. chunk 1 시작
+2. 커넥션풀에서 커넥션 가져옴
+3. 트랜잭션 시작
+4. ItemReader 로 Select
+5. ItemProcessor 작업 수행
+6. ItemWriter 로 insert or update
+7. 트랜잭션 커밋 및 종료
+8. chunk 1 종료
+
+위와 같은 프로세스에서는 DB의 커서를 사용하기엔 어렵다. 왜냐하면 각 청크별로 다른 커넥션과 트랜잭션을 사용하기 때문에, 청크 1 에서 청크 2 로 넘어갈때 커서가 유지되지 않기 때문이다.
+
+따라서 `JdbcCursorItemReader` 는 특별한 커넥션을 추가로 만들어 사용한다. 상세한 프로세스는 아래와 같다.
+
+1. step 시작
+2. ItemStream 의 `open()` 호출
+    - 이때 `JdbcCursorItemReader` 가 읽기 전용으로 사용할 DB 커넥션을 가져옴
+    - 해당 읽기 전용 커넥션을 유지하고 ResultSet(커서)을 오픈
+3. chunk 1 시작
+4. 커넥션풀에서 커넥션 가져옴
+5. 쓰기 트랜잭션 시작
+6. ItemReader 로 데이터 가져옴(`ResultSet.next()`). (2번에서 가져온 읽기 전용 커넥션으로 커서 기반 데이터 fetch)
+7. ItemProcessor 작업 수행 (쓰기 트랜잭션 사용)
+8. ItemWriter 로 insert or update (쓰기 트랜잭션 사용)
+9. 쓰기 트랜잭션 커밋 및 종료
+10. chunk 1 종료
+11. chunk 2 시작
+12. 이후 동일...
+13. ItemStream 의 `close()` 호출
+    - 2번에서 생성한 읽기 전용 DB 커넥션을 커넥션풀에 되돌려줌 (이때 DB 커서가 함께 해제됨.)
+14. step 종료
+
 #### 스냅샷 읽기
 
 - "`ItemReader` 가 조회하는 데이터"를 Step 에서 변경한다면, `ItemReader` 가 그 변화를 조회할 수 있을까? 역시 알지 못한다.
