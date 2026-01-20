@@ -2318,7 +2318,7 @@ RetryTemplate 은 Spring Retry 프로젝트의 핵심 컴포넌트로, **작업�
 
 자세한 것은 아래 도표를 통해 확인해볼 수 있다. 하나의 청크 프로세스에 대한 설명으로, `ChunkProvider` 와 `ChunkProcessor` 그리고 `RetryTemplate` 간의 관계를 나타낸다.
 
-![img.png](img.png)
+![img.png](img/img38.png)
 
 > 다만, Spring Batch 6 부터는 ItemReader 에서도 재시도가 가능해졌다.
 
@@ -2660,4 +2660,262 @@ ItemProcess 과정에서 예외가 발생하면, 청크단위로 Retry 하게 �
 
 따라서 위와 같이 총 9번의 재실행이 가능하게 된다. (아이템별 3번씩)
 
-// 이제 processorNonTransactional 설정쪽 내용 추가!!!
+### Retry 최적화
+
+itemProcessor 로 처리 도중에 예외가 발생하면 Retry가 발생하는데, 이때 **Retry는 청크단위로 수행**된다.
+
+예를 들어 하나의 청크가 아이템 10개로 구성될때, 3번째 아이템에서 예외 발생시 **이미 정상적으로 처리된 1~2번째 아이템에 대해서도 `process()` 가 다시 호출된다.**
+
+이처럼, 이미 성공적으로 처리된 아이템들에 대해서까지 매번 다시 `process()` 메서드를 호출하는 것은 비효율적이다.
+
+이런 불필요한 재처리 방지를 위해, Spring Batch 는 `processorNonTransactional()` 설정을 제공한다.
+
+이 설정을 사용하면, Spring Batch는 ItemProcessor를 비트랜잭션 상태로 표시하여, **한번 처리된 아이템의 결과를 캐시에 저장**한다.
+
+#### `processorNonTransactional()` 없는 기본 동작시
+
+| 실행 횟수 | 아이템1 process() 실행 횟수 | 아이템2 process() 실행 횟수 | 아이템3 process() 실행 횟수 |
+|-------|-------------------------|-----------------------------|---------------------|
+| 1     | 1                       | 1                           | 1 (예외 발생!)          |
+| 2     | 2 (process()가 한번 더 실행됨) | 2 (process()가 한번 더 실행됨)                      | 2 (이번엔 모두 정상 처리)    |
+
+#### `processorNonTransactional()` 설정시
+
+| 실행 횟수 | 아이템1 process() 실행 횟수       | 아이템2 process() 실행 횟수 | 아이템3 process() 실행 횟수 |
+|-------|----------------------------|----------------------|---------------------|
+| 1     | 1                          | 1                    | 1 (예외 발생!)          |
+| 2     | 1 (process() 실행 X, 캐시값 사용) | 1 (process() 실행 X, 캐시값 사용)   | 2 (이번엔 모두 정상 처리)    |
+
+#### `processorNonTransactional()` 설정 예시
+
+```java
+@Bean
+public Step terminationRetryStep() {
+    return new StepBuilder("terminationRetryStep", jobRepository)
+            .<Scream, Scream>chunk(3, transactionManager)
+            .reader(terminationRetryReader())
+            .processor(terminationRetryProcessor())
+            .writer(terminationRetryWriter())
+            .faultTolerant()
+            .retry(TerminationFailedException.class)
+            .retryLimit(3)
+            .listener(retryListener())
+            .processorNonTransactional() // ItemProcessor 비트랜잭션 처리
+            .build();
+}
+```
+
+#### `processorNonTransactional()` 사용시 주의사항
+
+`processorNonTransactional()` 의 이름 때문에 오해할 수 있지만, 이를 설정해도 **ItemProcessor에서 예외 발생시 청크 단위의 트랜잭션은 여전히 롤백**된다.
+
+Spring Batch 에서는 내결함성 기능을 사용하는 경우, **반드시 ItemProcessor가 멱등하게 동작해야 한다.** ItemProcessor 가 멱등하지 않은 경우, Retry시 문제가 될 수 있기 때문이다.
+
+**만약 멱등하지 않은 ItemProcessor를 사용해야한다면, `processorNonTransactional()` 를 사용하여 멱등성을 지킬 수 있다.**
+
+### ItemWriter 에서의 Retry
+
+이번에 ItemWriter 에서의 Retry 에 대해 알아보자. 주요 특징은 아래와 같다.
+
+- ItemWriter에서 예외가 발생하면, **ItemProcessor에서부터 처리가 재개**된다.
+- ItemProcessor 와 달리, ItemWriter의 재시도 횟수는 **청크단위로 관리**된다.
+
+예제 코드는 아래와 같다.
+
+```java
+/**
+ * 단순한 ItemProcessor
+ */
+@Bean
+public ItemProcessor<Scream, Scream> terminationRetryProcessor() {
+    return scream -> {
+        System.out.print("🔥🔥🔥 [ItemProcessor]: 처형 대상 = " + scream + "\n");
+        return scream;
+    };
+}
+
+/**
+ * 조건에 따라 TerminationFailedException 예외를 던지는 ItemWriter
+ */
+@Bean
+public ItemWriter<Scream> terminationRetryWriter() {
+    return new ItemWriter<>() {
+        private static final int MAX_PATIENCE = 2;
+        private int mercy = 0;  // 자비 카운트
+
+        @Override
+        public void write(Chunk<? extends Scream> screams) {
+            System.out.println("🔥🔥🔥 [ItemWriter]: 기록 시작. 처형된 아이템들 = " + screams);
+
+            for (Scream scream : screams) {
+                if (scream.getId() == 3 && mercy < MAX_PATIENCE) {
+                    mercy ++;
+                    System.out.println("🔥🔥🔥 [ItemWriter]: ❌ 기록 실패. 저항하는 아이템 발견 = " + scream);
+                    throw new TerminationFailedException("기록 거부자 = " + scream); //예외 발생
+                }
+                System.out.println("🔥🔥🔥 [ItemWriter]: ✅ 기록 완료. 처형된 아이템 = " + scream);
+            }
+        }
+    };
+}
+```
+
+이를 실행하면 아래와 같은 로그를 볼 수 있다.
+
+```text
+🔥🔥🔥 [ItemReader]: 처형 대상 = 1_멈춰
+🔥🔥🔥 [ItemReader]: 처형 대상 = 2_제발
+🔥🔥🔥 [ItemReader]: 처형 대상 = 3_살려줘
+🔥🔥🔥 [ItemProcessor]: 처형 대상 = 1_멈춰
+🔥🔥🔥 [ItemProcessor]: 처형 대상 = 2_제발
+🔥🔥🔥 [ItemProcessor]: 처형 대상 = 3_살려줘
+🔥🔥🔥 [ItemWriter]: 기록 시작. 처형된 아이템들 = [items=[1_멈춰, 2_제발, 3_살려줘], skips=[]]
+🔥🔥🔥 [ItemWriter]: ✅ 기록 완료. 처형된 아이템 = 1_멈춰
+🔥🔥🔥 [ItemWriter]: ✅ 기록 완료. 처형된 아이템 = 2_제발
+🔥🔥🔥 [ItemWriter]: ❌ 기록 실패. 저항하는 아이템 발견 = 3_살려줘
+💀💀💀 킬구형: 이것 봐라? 안 죽네? com.system.batch.killbatchsystem.TerminationRetryConfig$TerminationFailedException: 기록 거부자 = 3_살려줘 (현재 총 시도 횟수=1). 다시 처형한다.
+// ⚠️ 해설: 이 지점에서 롤백 발생 후 청크 처리 다시 시작
+
+🔥🔥🔥 [ItemProcessor]: 처형 대상 = 1_멈춰
+🔥🔥🔥 [ItemProcessor]: 처형 대상 = 2_제발
+🔥🔥🔥 [ItemProcessor]: 처형 대상 = 3_살려줘
+🔥🔥🔥 [ItemWriter]: 기록 시작. 처형된 아이템들 = [items=[1_멈춰, 2_제발, 3_살려줘], skips=[]]
+🔥🔥🔥 [ItemWriter]: ✅ 기록 완료. 처형된 아이템 = 1_멈춰
+🔥🔥🔥 [ItemWriter]: ✅ 기록 완료. 처형된 아이템 = 2_제발
+🔥🔥🔥 [ItemWriter]: ❌ 기록 실패. 저항하는 아이템 발견 = 3_살려줘
+💀💀💀 킬구형: 이것 봐라? 안 죽네? com.system.batch.killbatchsystem.TerminationRetryConfig$TerminationFailedException: 기록 거부자 = 3_살려줘 (현재 총 시도 횟수=2). 다시 처형한다.
+// ⚠️ 해설: 이 지점에서 롤백 발생 후 청크 처리 다시 시작
+
+🔥🔥🔥 [ItemProcessor]: 처형 대상 = 1_멈춰
+🔥🔥🔥 [ItemProcessor]: 처형 대상 = 2_제발
+🔥🔥🔥 [ItemProcessor]: 처형 대상 = 3_살려줘
+🔥🔥🔥 [ItemWriter]: 기록 시작. 처형된 아이템들 = [items=[1_멈춰, 2_제발, 3_살려줘], skips=[]]
+🔥🔥🔥 [ItemWriter]: ✅ 기록 완료. 처형된 아이템 = 1_멈춰
+🔥🔥🔥 [ItemWriter]: ✅ 기록 완료. 처형된 아이템 = 2_제발
+🔥🔥🔥 [ItemWriter]: ✅ 기록 완료. 처형된 아이템 = 3_살려줘
+// 나머지 아이템들(4_으악, 5_끄아악, 6_System.exit(-666))도 성공적으로 처리됨
+
+...
+```
+
+위 로그를 분석해보면 아래와 같다.
+
+1. ItemReader가 3개의 아이템을 읽어들인다.
+2. ItemProcessor 처리 완료
+3. ItemWriter에서 예외 발생 : 첫 번째, 두 번째 아이템은 기록되지만, 세 번째 아이템에서 예외가 발생한다.
+4. 트랜잭션 롤백 및 청크 처리 재개 : 해당 청크에 대한 트랜잭션이 롤백되지만, 스텝 실패 처리하지 않고 다시 Retry 된다.
+5. ItemProcessor부터 재시작
+6. ItemWriter에서 예외 다시 발생
+7. 세 번째 Retry 실행
+8. 최종 성공
+9. 다음 청크로 이동
+
+### ItemWriter 에서의 Retry 횟수 관리
+
+여기서 기억해야 하는 것은 **Retry 횟수는 청크단위로 관리**된다는 것이다.
+
+`retryLimit()` 이 2로 설정되어 있다고 가정해보자.
+
+| 실행 횟수 | [청크1] 아이템1 성공/실패 횟수      | [청크1] 아이템2 성공/실패 횟수      | [청크1] 아이템3 성공/실패 횟수 |
+|-------|--------------------------|--------------------------|---------------------|
+| 1     | 0/1 (ItemWriter에서 예외 발생) | 0/0                      | 0/0                 |
+| 2     | 1/1                      | 0/1 (ItemWriter에서 예외 발생) | 0/0                 |
+| 3     | X                        | X                        | X                   |
+
+위와 같이 서로 다른 아이템에서 실패하더라도, 해당 청크는 2번까지만 실행된다. 단, 서로 다른 청크에서 실패하는 경우에는 관계없다.
+
+
+### 다양한 재시도 정책(Retry Policy) 적용하기
+
+만약 다른 재시도 전략이 필요할 경우, 아래처럼 직접 RetryPolicy를 지정할 수 있다.
+
+```java
+@Bean
+public Step terminationRetryStep() {
+    return new StepBuilder("terminationRetryStep", jobRepository)
+        .<Scream, Scream>chunk(3, transactionManager)
+        .reader(terminationRetryReader())
+        .processor(terminationRetryProcessor())
+        .writer(terminationRetryWriter())
+        .faultTolerant()
+        // 타임아웃 기반 정책 (일정 시간 내에 성공하지 못하면 실패)
+        .retryPolicy(new TimeoutRetryPolicy(Long.MAX_VALUE)) // CPU를 고문하는 무한 재시도 루프
+        .listener(retryListener())
+        .processorNonTransactional() // ItemProcessor 비트랜잭션 처리
+        .build();
+}
+```
+
+만약 예외별도 다른 재시도 정책을 설정하고 싶다면, `ExceptionClassifierRetryPolicy` 를 사용할 수 있다.
+
+```java
+private RetryPolicy retryPolicy() {
+    Map<Class<? extends Throwable>, RetryPolicy> policyMap = new HashMap<>();
+
+    SimpleRetryPolicy dbRetryPolicy = new SimpleRetryPolicy(3);
+    SimpleRetryPolicy apiRetryPolicy = new SimpleRetryPolicy(5);
+
+    policyMap.put(DataAccessException.class, dbRetryPolicy);
+    policyMap.put(HttpServerErrorException.class, apiRetryPolicy);
+
+    ExceptionClassifierRetryPolicy retryPolicy = new ExceptionClassifierRetryPolicy();
+    retryPolicy.setPolicyMap(policyMap);
+
+    return retryPolicy;
+}
+
+@Bean
+public Step terminationRetryStep() {
+    return new StepBuilder("terminationRetryStep", jobRepository)
+            .<Scream, Scream>chunk(3, transactionManager)
+            .reader(terminationRetryReader())
+            .processor(terminationRetryProcessor())
+            .writer(terminationRetryWriter())
+            .faultTolerant()
+            .retryPolicy(retryPolicy())
+           // .retry(TerminationFailedException.class)
+           // .retryLimit(3)
+            .listener(retryListener())
+            .build();
+}
+```
+
+만약 커스텀 RetryPolicy 와 `retry()`, `retryLimit()` 을 함께 사용하면, AND 조건으로 두 정책 모두 재시도가 가능하다고 판단되어야만 재시도된다.
+
+**재시도 로직이 복잡해질 수 있기에, 가능하면 함께 사용하지 않도록 한다.**
+
+### BackOffPolicy
+
+네트워크 이슈로 인해 API 호출이 실패한 경우, 즉시 재시도하면 네트워크 상태가 아직 복구되지 않아 동일한 실패가 반복될 가능성이 높다.
+
+이런 상황에서는 일정 시간을 기다린 후에 재시도하는 것이 효과적인데, 이때 사용하는 것이 바로 BackOffPolicy 이다.
+
+**별도로 BackOffPolicy를 설정하지 않으면 기본적으로 NoBackOffPolicy가 적용되어 즉시 재시도한다.**
+
+대표적인 백오프 정책은 아래와 같다.
+
+```java
+.retry(TerminationFailedException.class)
+.retryLimit(3)
+
+// BackOffPolicy 설정
+.backOffPolicy(new FixedBackOffPolicy() {{
+  setBackOffPeriod(1000); // 1초
+}})
+
+// 또는 
+.backOffPolicy(new ExponentialBackOffPolicy() {{
+  setInitialInterval(1000L);  // 초기 대기 시간
+  setMultiplier(2.0);        // 대기 시간 증가 배수
+  setMaxInterval(10000L);     // 최대 대기 시간
+}})
+```
+
+특히 ExponentialBackOffPolicy는 외부 시스템과의 통신 장애에 효과적이다.
+
+첫 번째 실패 후 1초 대기, 두 번째 실패 후 2초, 세 번째 실패 후 4초... 이런 식으로 대기 시간이 점점 증가하며 외부 시스템에게 충분한 회복할 시간을 제공한다.
+
+![img_1.png](img/img39.png)
+
+## Skip
+
