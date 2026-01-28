@@ -3784,3 +3784,112 @@ ItemStream.open() 메서드는 ExecutionContext에서 이전 실행의 상태 �
 update() 메서드로 저장한 정보는 데이터베이스에 기록되고, 재시작 시 open() 메서드를 통해 그 정보가 다시 로드된다.
 
 ## 배치 메타데이터 테이블 구조
+
+Spring Batch는 메타데이터 저장소로 관계형 데이터베이스를 사용하며, 여러 개의 테이블을 통해 Job과 Step의 실행 상태 및 통계 정보를 관리한다.
+
+### 주요 메타데이터 테이블
+
+- `BATCH_JOB_INSTANCE` : JobInstance 정보를 저장한다. 각 JobInstance는 고유한 ID와 Job 이름, JobParameters로 식별된다.
+- `BATCH_JOB_EXECUTION` : JobExecution 정보를 저장한다. 각 JobExecution은 고유한 ID, 관련된 JobInstance ID, 실행 상태, 시작 및 종료 시간 등을 포함한다.
+- `BATCH_JOB_EXECUTION_PARAMS` : JobExecution과 관련된 JobParameters 정보를 저장한다. 각 파라미터는 이름, 값, 타입, 식별 여부 등을 포함한다.
+- `BATCH_STEP_EXECUTION` : StepExecution 정보를 저장한다. 각 StepExecution은 고유한 ID, 관련된 JobExecution ID, Step 이름, 실행 상태, 읽기/쓰기 카운트 등을 포함한다.
+- `BATCH_JOB_EXECUTION_CONTEXT` : JobExecution과 관련된 ExecutionContext 정보를 저장한다. 이는 Job 실행 중에 필요한 상태 정보를 담는다.
+- `BATCH_STEP_EXECUTION_CONTEXT` : StepExecution과 관련된 ExecutionContext 정보를 저장한다. 이는 Step 실행 중에 필요한 상태 정보를 담는다.
+
+이제 각 테이블에 대해 상세히 설명한다.
+
+#### `BATCH_JOB_INSTANCE` 테이블
+
+| 컬럼명            | 설명                              | 키 타입  |
+|-------------------|---------------------------------|----------|
+| JOB_INSTANCE_ID   | Job 인스턴스의 고유 식별자                |   PK     |
+| JOB_NAME          | Job 이름. JobInstance 식별에 반드시 필요  |          |
+| JOB_KEY           | JobParameters의 해시값              |          |
+| VERSION           | 낙관적 락(Optimistic Lock) 버전.<br/>JobInstance의 경우 항상 0으로 유지됨 |          |
+
+- 제약조건
+  - `unique (JOB_NAME , JOB_KEY)` : 동일한 Job 이름과 JobParameters 조합으로 중복된 JobInstance 생성 방지
+
+#### `BATCH_JOB_EXECUTION` 테이블
+
+| 컬럼명            | 설명                                 | 키 타입   |
+|------------------|------------------------------------|---------|
+| JOB_EXECUTION_ID | 작업 실행의 고유 식별자                  | PK     |
+| VERSION          | 낙관적 락 버전                        |         |
+| JOB_INSTANCE_ID  | 연관된 JobInstance의 ID              | FK      |
+| CREATE_TIME      | JobExecution 생성 시간               |         |
+| START_TIME       | JobExecution 시작 시간               |         |
+| END_TIME         | JobExecution 종료 시간               |         |
+| STATUS           | JobExecution 현재 상태(BatchStatus)  |         |
+| EXIT_CODE        | JobExecution 종료 코드               |         |
+| EXIT_MESSAGE     | JobExecution 종료 메시지(오류 포함)     |         |
+| LAST_UPDATED     | 마지막 업데이트 시간                    |         |
+
+- 제약조건
+  - `foreign key (JOB_INSTANCE_ID) references BATCH_JOB_INSTANCE(JOB_INSTANCE_ID)`
+    - 하나의 JobInstance는 여러 번 실행될 수 있으므로(실패 후 재시작 등) 동일한 JOB_INSTANCE_ID 값을 갖는 여러 BATCH_JOB_EXECUTION 레코드가 존재할 수 있다.
+    - 이는 1:N 관계를 형성한다.
+
+#### `BATCH_JOB_EXECUTION_PARAMS` 테이블
+
+| 컬럼명            | 설명                          | 키 타입 |
+|------------------|-----------------------------|---------|
+| JOB_EXECUTION_ID | 작업 실행의 ID                 | FK      |
+| PARAMETER_NAME   | 파라미터 이름                  |         |
+| PARAMETER_TYPE   | 파라미터 타입                  |         |
+| PARAMETER_VALUE  | 파라미터 값                    |         |
+| IDENTIFYING      | JobInstance 식별에 사용 여부    |         |
+
+#### `BATCH_STEP_EXECUTION` 테이블
+
+| 컬럼명              | 설명                                  | 키 타입  |
+|-------------------|--------------------------------------|---------|
+| STEP_EXECUTION_ID | StepExecution 고유 식별자               | PK      |
+| VERSION           | 낙관적 락 버전                          |         |
+| STEP_NAME         | Step 이름                             |         |
+| JOB_EXECUTION_ID  | 연관된 JobExecution의 ID               | FK      |
+| CREATE_TIME       | 실행 레코드 생성 시간                     |         |
+| START_TIME        | StepExecution 시작 시간                |         |
+| END_TIME          | StepExecution 종료 시간                |         |
+| STATUS            | StepExecution의 현재 상태(BatchStatus)  |         |
+| COMMIT_COUNT      | 커밋 횟수                              |         |
+| READ_COUNT        | 읽은 아이템 수                          |         |
+| FILTER_COUNT      | 필터링된 아이템 수                       |         |
+| WRITE_COUNT       | 쓴 아이템 수                            |         |
+| READ_SKIP_COUNT   | 읽기 건너뛴 수                          |         |
+| WRITE_SKIP_COUNT  | 쓰기 건너뛴 수                          |         |
+| PROCESS_SKIP_COUNT| 처리 건너뛴 수                          |         |
+| ROLLBACK_COUNT    | 롤백 횟수                              |         |
+| EXIT_CODE         | StepExecution 종료 코드                |         |
+| EXIT_MESSAGE      | StepExecution 종료 메시지              |         |
+| LAST_UPDATED      | 마지막 업데이트 시간                     |         |
+
+- 제약조건
+  - `foreign key (JOB_EXECUTION_ID) references BATCH_JOB_EXECUTION(JOB_EXECUTION_ID)`
+    - 하나의 JobExecution은 여러 Step으로 구성될 수 있으므로, 동일한 JOB_EXECUTION_ID 값을 갖는 여러 BATCH_STEP_EXECUTION 레코드가 존재할 수 있다.
+    - 이는 1:N 관계를 형성하며, 각 StepExecution이 어떤 JobExecution에 속하는지를 나타낸다.
+
+#### `BATCH_JOB_EXECUTION_CONTEXT` 테이블 , `BATCH_STEP_EXECUTION_CONTEXT` 테이블
+
+| 컬럼명            | 설명                                | 키 타입   |
+|------------------|-----------------------------------|---------|
+| JOB_EXECUTION_ID | JobExecution의 ID                  | PK, FK  |
+| SHORT_CONTEXT    | 직렬화된 ExecutionContext의 문자열 버전 |         |
+| SERIALIZED_CONTEXT| 전체 컨텍스트, 직렬화된 형태            |         |
+
+| 컬럼명              | 설명                               | 키 타입   |
+|-------------------|-----------------------------------|---------|
+| STEP_EXECUTION_ID | StepExecution의 ID                 | PK, FK  |
+| SHORT_CONTEXT     | 직렬화된 ExecutionContext의 문자열 버전 |         |
+| SERIALIZED_CONTEXT| 전체 컨텍스트, 직렬화된 형태             |         |
+
+ExecutionContext의 데이터는 직렬화되어 문자열로 변환된다. 이 직렬화된 문자열의 길이가 일정 기준(기본값 2500자)보다 짧으면 `SHORT_CONTEXT`에만 저장되고 `SERIALIZED_CONTEXT`는 NULL로 설정된다.
+
+반대로 직렬화된 문자열이 기준 길이를 초과하면 SHORT_CONTEXT에는 잘린 버전(약 2492자 + "...")이 저장되고, 전체 내용은 SERIALIZED_CONTEXT에 CLOB 형태로 저장된다.
+
+## Job 의 실행과 메타데이터 저장까지
+
+![img.png](img/img44.png)
+
+스프링 배치의 전체 플로우를 간략화하면 위와 같다. 이번에는 위 플로우의 중단에 해당하는 JobLauncher 와 Job, JobRepository 가 어떻게 상호작용하는지 살펴본다.
+
