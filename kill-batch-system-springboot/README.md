@@ -3686,5 +3686,101 @@ public Job brutalizedSystemJob() {
 > - **실패한** "동일한 JobInstance (동일한 Job, 동일한 JobParameters)"에 대해 여러 번 실행하는 것을 허용하려면 : 기본 동작
 > - **실패한** "동일한 JobInstance (동일한 Job, 동일한 JobParameters)"에 대해 여러 번 실행하는 것을 막으려면 : `preventRestart()` 사용
 
-## StepExecution 의 핵심 도메인
+## Step 의 핵심 도메인
 
+### StepExecution (Step의 실제 실행 시도/이력)
+
+StepExecution은 JobExecution의 하위 개념으로, Job 내에서 각 Step의 실제 실행 시도를 나타낸다.
+
+하나의 Job은 여러 Step으로 구성될 수 있기에, 하나의 JobExecution이 여러 개의 StepExecution을 가질 수 있다.
+
+```
+JobExecution {
+    StepExecution("step1")
+    StepExecution("step2")
+    StepExecution("step3")
+}
+```
+
+StepExecution은 Step 실행 시 생성되며, 해당 Step이 실제로 시작될 때만 생성된다. 이는 중요한 포인트다.
+
+예를 들어, 첫 번째 Step이 실패하면 두 번째 Step은 실행되지 않으므로 두 번째 Step에 대한 StepExecution도 생성되지 않는다.
+
+StepExecution이 갖는 주요 실행 정보는 아래와 같다.
+
+- 현재 상태: Step이 현재 어떤 상태인지를 나타내는 BatchStatus
+- 읽기/쓰기 카운트: 성공적으로 읽거나 쓴 아이템의 수
+- 커밋/롤백 카운트: 트랜잭션 처리 횟수
+- 스킵 카운트: 청크 처리 중 건너뛴 아이템의 수
+- 시작/종료 시간: Step 실행의 시간적 정보
+- 종료 코드: Step 실행의 최종 결과 코드
+- 예외 정보: 실패 시 발생한 오류에 대한 상세 정보
+
+#### StepExecution 의 주요 실행 정보 - BatchStatus
+
+StepExecution의 BatchStatus 와 JobExecution의 BatchStatus 는 동일한 열거형(Enum)을 사용한다. 즉, StepExecution도 `COMPLETED`, `FAILED`, `STOPPED` 등의 상태를 가질 수 있다.
+
+그리고 StepExecution의 BatchStatus 와 JobExecution의 BatchStatus 는 서로 면밀한 관계를 갖는다.
+
+**JobExecution의 최종 BatchStatus는 해당 JobExecution에서 가장 마지막에 실행된 StepExecution의 BatchStatus 값을 기준으로 결정된다.**
+
+이에 대한 예시는 아래와 같다.
+
+```
+JobExecution {
+    StepExecution("step1") - COMPLETED
+    StepExecution("step2") - FAILED
+    StepExecution("step3") - (실행되지 않음)
+}
+```
+
+위 예시에서 `step2`가 실패했기 때문에, `step3`은 실행되지 않았다. 따라서 가장 마지막에 실행된 StepExecution의 BatchStatus는 `FAILED` 이다. 이에 따라 JobExecution의 최종 BatchStatus는 `FAILED`가 된다.
+
+#### 실패와 재시작시, StepExecution 의 동작 방식
+
+스텝을 다시 실행할 때 새로운 StepExecution이 생성된다. StepExecution이 JobExecution에 종속되어 있기에, Job 이 재시작될 때마다 새로운 JobExecution이 생성되고, 그에 따라 각 Step에 대해 새로운 StepExecution이 생성된다.
+
+그리고 중요한 사실은, **실패한 Job을 재시작할 때는 실패한 Step부터 다시 시작된다는 것**이다. 이미 성공적으로 완료된 Step은 재실행되지 않으므로 **새로운 StepExecution도 생성되지 않**는다.
+
+```
+JobExecution#1 (FAILED) {
+    StepExecution#1 ("step1", COMPLETED)
+    StepExecution#2 ("step2", FAILED)    // 이놈이 실패했다 💀
+}
+
+JobExecution#2 (COMPLETED) {
+    // StepExecution#1 ("step1")은 이미 성공했으므로 다시 생성되지 않음
+    StepExecution#3 ("step2", COMPLETED) // 실패한 step2부터 재시작
+}
+```
+
+#### StepExecution 의 전략적 활용 예시
+
+- 성능 모니터링: 각 Step의 처리 시간과 처리량을 분석하여 병목 지점 식별
+- 오류 패턴 분석: 특정 데이터나 조건에서 반복적으로 오류가 발생하는지 파악
+- 자원 할당 최적화: 읽기/쓰기/처리 비율을 분석하여 리소스 할당 조정
+
+## ExecutionContext : 상태 저장소
+
+ExecutionContext는 배치 작업의 상태 정보를 저장하는 데이터 컨테이너이다. 이는 JobExecution과 StepExecution에 각각 연결되어, 작업의 진행 상태를 추적하고 복원하는 데 사용된다.
+
+**비즈니스 로직 처리 중에 발생하는 사용자 정의 데이터를 관리할 방법**이 필요한데, 이때 사용하는 것이 바로 ExecutionContext다.
+
+```
+// ExecutionContext 예시
+ExecutionContext {
+    "processingIndex": 42500,              // 마지막으로 처리한 항목 인덱스
+    "totalAmount": 2750000.00,             // 중간 집계 결과
+    "lastProcessedId": "TRX-20240315-789", // 마지막으로 처리한 거래 ID
+}
+```
+
+### ItemStream 과 ExecutionContext
+
+ItemStream.open() 메서드는 ExecutionContext에서 이전 실행의 상태 정보를 복원하고, update() 메서드는 현재 실행 중인 상태 정보를 ExecutionContext에 저장했다.
+
+이처럼 open()에서 이전 상태를 가져오고 update()로 현재 상태를 저장할 수 있었던 이유가 바로 이 ExecutionContext가 메타데이터 저장소에 영구적으로 저장되기 때문이다.
+
+update() 메서드로 저장한 정보는 데이터베이스에 기록되고, 재시작 시 open() 메서드를 통해 그 정보가 다시 로드된다.
+
+## 배치 메타데이터 테이블 구조
