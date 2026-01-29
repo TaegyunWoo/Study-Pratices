@@ -470,6 +470,31 @@ public class SystemInfiltrationTasklet implements Tasklet {
 }
 ```
 
+### JobScope와 StepScope의 동작원리
+
+Spring Batch는 ThreadLocal에 `ExecutionContext` 와 `JobParameters` 를 바인딩함으로써, JobScope와 StepScope를 구현한다.
+
+구조적인 흐름은 아래와 같다. 설명하지 않은 키워드는 글 후반부에서 알수있다.
+
+#### JobScope 구조적 흐름
+
+| 단계 | 수행주체 | 동작내용                                        |
+|----|------|---------------------------------------------|
+|  1. 로딩 시점  |   Spring Container   | `@JobScope` 빈을 Proxy 객체로 등록 (실제 생성 보류)      |
+| 2. Job 실행 직전   |   JobLauncher / Job   | **JobSynchronizationManager**를 통해 현재 쓰레드의 ThreadLocal에 **JobContext**를 바인딩 |
+|  3. 빈 주입/사용 시점  |   Proxy Bean   | JobParameters나 JobExecutionContext의 값을 참조하는 시점에 JobContext에서 데이터를 꺼내 실제 빈을 생성 |
+|  4. Job 종료 시점  |   Job   | Job 실행이 완료되면 JobSynchronizationManager에서 컨텍스트를 제거하고 관련 빈들을 소멸        |
+
+#### StepScope 구조적 흐름
+
+| 단계 | 수행주체 | 동작내용 |
+|----|------|------|
+|  1. 로딩 시점  |   Spring Container   |    `@StepScope` 빈을 Proxy 객체로 등록 (실제 생성 보류)  |
+| 2. 실행 시점   |   StepRunner   |    현재 쓰레드의 **ThreadLocal**에 StepContext를 바인딩  |
+|  3. 호출 시점  |   Proxy Bean   |   메서드 호출 시 ThreadLocal에서 데이터를 꺼내 진짜 빈 생성 및 주입   |
+|  4. 종료 시점  |   StepRunner   |   해당 쓰레드에서 StepContext를 제거 (Clean-up)   |
+
+
 ## 컴파일 시점에 없는 Job Parameter 값을 참조하는 방법
 
 JobBuilder 빈에서 StepBuilder 빈을 참조할 때, 아래와 같이 처리할 수 있다.
@@ -3893,3 +3918,6 @@ ExecutionContext의 데이터는 직렬화되어 문자열로 변환된다. 이 
 
 스프링 배치의 전체 플로우를 간략화하면 위와 같다. 이번에는 위 플로우의 중단에 해당하는 JobLauncher 와 Job, JobRepository 가 어떻게 상호작용하는지 살펴본다.
 
+### JobLauncher
+
+JobLauncher 는 Job을 실행시키는 역할을 한다. 이 컴포넌트는 Job과 JobParameters를 받아 실행하고, 그 결과로 JobExecution을 반환한다.
