@@ -3912,12 +3912,16 @@ ExecutionContext의 데이터는 직렬화되어 문자열로 변환된다. 이 
 
 반대로 직렬화된 문자열이 기준 길이를 초과하면 SHORT_CONTEXT에는 잘린 버전(약 2492자 + "...")이 저장되고, 전체 내용은 SERIALIZED_CONTEXT에 CLOB 형태로 저장된다.
 
-## Job 의 실행과 메타데이터 저장까지
+## 생명주기 - JobInstance, JobExecution, Job 수준 ExecutionContext
 
-![img.png](img/img44.png)
+### JobInstance
 
-스프링 배치의 전체 플로우를 간략화하면 위와 같다. 이번에는 위 플로우의 중단에 해당하는 JobLauncher 와 Job, JobRepository 가 어떻게 상호작용하는지 살펴본다.
+![img.png](img/img45.png)
 
-### JobLauncher
+### JobExecution
 
-JobLauncher 는 Job을 실행시키는 역할을 한다. 이 컴포넌트는 Job과 JobParameters를 받아 실행하고, 그 결과로 JobExecution을 반환한다.
+![img.png](img/img46.png)
+
+### Job 수준 ExecutionContext
+
+![img.png](img/img47.png)
