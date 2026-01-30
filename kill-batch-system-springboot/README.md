@@ -494,6 +494,13 @@ Spring Batch는 ThreadLocal에 `ExecutionContext` 와 `JobParameters` 를 바인
 |  3. 호출 시점  |   Proxy Bean   |   메서드 호출 시 ThreadLocal에서 데이터를 꺼내 진짜 빈 생성 및 주입   |
 |  4. 종료 시점  |   StepRunner   |   해당 쓰레드에서 StepContext를 제거 (Clean-up)   |
 
+#### JobScope와 StepScope의 동작원리의 핵심
+
+여기서 중요한 것은 Job 레벨의 ExecutionContext와 Step 레벨의 ExecutionContext가 **ThreadLocal 에 저장**된다는 것이다.
+
+이를 통해, 동일한 Job 정의를 여러 쓰레드가 동시에 실행하더라도, **각 쓰레드는 자신만의 독립적인 ExecutionContext를 가지게 된다.**
+
+따라서 동시성 문제에서 자유로워진다.
 
 ## 컴파일 시점에 없는 Job Parameter 값을 참조하는 방법
 
