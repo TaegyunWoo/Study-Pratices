@@ -3932,3 +3932,7 @@ ExecutionContext의 데이터는 직렬화되어 문자열로 변환된다. 이 
 ### Job 수준 ExecutionContext
 
 ![img.png](img/img47.png)
+
+## 생명주기 - StepExecution, Step 수준 ExecutionContext
+
+![img.png](img/img48.png)
