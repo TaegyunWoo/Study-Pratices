@@ -494,6 +494,66 @@ Spring Batch는 ThreadLocal에 `ExecutionContext` 와 `JobParameters` 를 바인
 |  3. 호출 시점  |   Proxy Bean   |   메서드 호출 시 ThreadLocal에서 데이터를 꺼내 진짜 빈 생성 및 주입   |
 |  4. 종료 시점  |   StepRunner   |   해당 쓰레드에서 StepContext를 제거 (Clean-up)   |
 
+### SpEL 표현식과 JobContext/StepContext 간의 관계
+
+`#{jobParameters}` 이런식으로 SpEL을 사용하여 관련 값을 가져왔었다.
+
+이는 JobContext/StepContext 의 getter 메서드를 사용하는 것과 같다.
+
+JobContext 와 StepContext 의 내부 메서드를 보면 아래와 같다.
+
+```java
+public Map<String, Object> getStepExecutionContext() {
+    return stepExecution.getExecutionContext().toMap();
+}
+
+public Map<String, Object> getJobExecutionContext() {
+    return stepExecution.getJobExecution().getExecutionContext().toMap();
+}
+
+public Map<String, Object> getJobParameters() {
+    Map<String, Object> result = new HashMap<>();
+    for (Entry<String, JobParameter<?>> entry : stepExecution.getJobParameters().getParameters().entrySet()) {
+       result.put(entry.getKey(), entry.getValue().getValue());
+    }
+    return Collections.unmodifiableMap(result);
+}
+```
+
+| SpEL 표현식  | JobContext/StepContext 메서드 |
+|---|----------------------------|
+| #{jobParameters}  |      getJobParameters()                      |
+| #{stepExecutionContext}  |         getStepExecutionContext()                   |
+| #{jobExecutionContext}  |               getJobExecutionContext()             |
+
+**위와 같이 매핑되고, JobContext/StepContext에 존재하는 다른 메서드를 당연히 호출할 수도 있다.**
+
+이것이 가능한 이유는 아래처럼 `BeanWrapperImpl` 로 생성되기 때문이다.
+
+```java
+// StepScope.resolveContextualObject()
+@Override
+public Object resolveContextualObject(String key) {
+    StepContext context = getContext();  // 1. StepContext 확보
+    return new BeanWrapperImpl(context).getPropertyValue(key);  // 2. BeanWrapperImpl
+}
+```
+
+`#{jobParameters['name']}` 를 예시로 값을 가져오는 절차를 정리해보면 아래와 같다.
+
+1. SpEL 엔진의 가동
+   - Spring Batch가 `@StepScope` 빈을 만들 때 `#{...}`를 발견하면 `SpelExpressionParser`를 깨운다.
+   - 엔진은 `jobParameters`라는 단어와 `['name']`이라는 키를 인식한다.
+2. 데이터 타겟(EvaluationContext) 지정
+   - 엔진은 값을 어디서 찾을지 결정해야하는데, Spring Batch는 현재 실행 중인 스텝의 정보를 담은 **StepContext**를 엔진에게 던져준다.
+   - 이것이 EvaluationContext 가 된다.
+3. BeanWrapperImpl의 개입
+   - 엔진이 StepContext에서 `jobParameters`라는 속성을 찾으려고 할 때, 직접 객체를 뒤지는 게 아니라 **BeanWrapperImpl**을 사용한다.
+4. BeanWrapperImpl 를 통한 값 조회
+   - BeanWrapperImpl은 StepContext 클래스를 슥 훑어서 `getJobParameters()`라는 메서드가 있는지 확인.
+   - 메서드가 있으면 리플렉션으로 호출해서 실제 `Map<String, Object>` 객체를 받아옴.
+   - 이제 SpEL 엔진은 받아온 Map에서 `['name']`이라는 키로 값을 꺼내옴.
+
 
 ## 컴파일 시점에 없는 Job Parameter 값을 참조하는 방법
 
@@ -3925,3 +3985,265 @@ ExecutionContext의 데이터는 직렬화되어 문자열로 변환된다. 이 
 ### Job 수준 ExecutionContext
 
 ![img.png](img/img47.png)
+
+# Spring Batch 의 실행 제어권 메커니즘
+
+이번에는 아래 내용에 대해 살펴본다.
+
+- 커맨드라인 입력이 어떻게 실제 Job과 파라미터로 변환되는지(JobLauncherApplicationRunner)
+- Spring Boot가 배후에서 어떻게 환경을 자동으로 구축하는지(BatchAutoConfiguration)
+- 배치 프로세스의 생명주기를 완벽하게 제어하기 위한 종료 코드(Exit Code) 관리 전략
+
+## JobLauncherApplicationRunner: 시스템 명령 체인의 시작점
+
+JobLauncherApplicationRunner 는 **커맨드라인으로 전달된 문자열 인수를 분석하여 Job과 JobParameters로 변환 후 실행**하는 핵심 Runner이다.
+
+DefaultJobParametersConverter를 통해 `key=value,type` 형태의 문자열을 Java 타입으로 매핑한다.
+
+### JobLauncherApplicationRunner 가 Job을 실행하는 2가지 방법
+
+JobLauncherApplicationRunner는 두 가지 다른 경로로 Job을 실행한다.
+
+```java
+// JobLauncherApplicationRunner.launchJobFromProperties()
+protected void launchJobFromProperties(Properties properties) throws JobExecutionException {
+    JobParameters jobParameters = this.converter.getJobParameters(properties);
+    this.executeLocalJobs(jobParameters);
+    this.executeRegisteredJobs(jobParameters);
+}
+```
+
+#### 1) `executeLocalJobs()` : 애플리케이션 컨텍스트 내의 Job 실행
+
+우리가 `@Configuration` 클래스에서 빈으로 등록한 Job들을 직접 찾아 실행한다.
+
+말 그대로 Spring 애플리케이션 컨텍스트에 존재하는 "로컬 Job"들을 대상으로 한다.
+
+```java
+// JobLauncherApplicationRunner.executeLocalJobs()
+private void executeLocalJobs(JobParameters jobParameters) throws JobExecutionException {
+    for (Job job : this.jobs) {
+       if (StringUtils.hasText(this.jobName)) {
+          if (!this.jobName.equals(job.getName())) { //지정된 이름과 일치하는 Job만 실행하기 위해, 일치하지 않는다면 continue
+             logger.debug(LogMessage.format("Skipped job: %s", job.getName()));
+             continue;
+          }
+       }
+       execute(job, jobParameters);
+    }
+}
+```
+
+애플리케이션 컨텍스트가 초기화될 때, JobLauncherApplicationRunner 의 `setJobs()` 메서드를 통해 Job Bean 객체들이 세터 주입된다.
+
+```java
+// JobLauncherApplicationRunner.setJobs()
+@Autowired(required = false)
+public void setJobs(Collection<Job> jobs) {
+    this.jobs = jobs;
+}
+```
+
+그리고 애플리케이션 컨텍스트 초기화가 완료되면, SpringBoot가 JobLauncherApplicationRunner의 run() 메서드를 호출한다.
+
+이 덕분에, 이미 의존성 주입받은 필드 `this.jobs` 를 `JobLauncherApplicationRunner.executeLocalJobs()` 에서 사용할 수 있게 된다.
+
+#### 2) `executeRegisteredJobs()` : JobRegistry를 통한 실행
+
+JobRegistry에 등록된 Job들을 찾아 동적으로 실행한다. JobRegistry는 오직 Job만을 위한 특화된 저장소라고 할 수 있다. 따라서 Job 조회와 관리에 최적화된 메서드들을 제공한다.
+
+```java
+// JobLauncherApplicationRunner.executeRegisteredJobs()
+private void executeRegisteredJobs(JobParameters jobParameters) throws JobExecutionException {
+    if (this.jobRegistry != null && StringUtils.hasText(this.jobName)) {
+       if (!isLocalJob(this.jobName)) { //LocalJob으로 존재하는 경우, 실행하지 않는다. 이를 통해, executeLocalJobs() 와의 중복실행을 막는다.
+          Job job = this.jobRegistry.getJob(this.jobName); //JobRegistry로부터 jobName과 일치하는 Job을 찾아 실행한다.
+          execute(job, jobParameters);
+       }
+    }
+}
+```
+
+JobRegistry 는 동적으로 Job을 등록해야 할 때 유용하다. 
+
+(e.g. 애플리케이션 시작 시점에 외부 설정 파일이나 데이터베이스로부터 Job 정의를 읽어와 동적으로 등록해야하는 시나리오)
+
+자세한 것은 추후 다룬다.
+
+## BatchAutoConfiguration : Spring Batch의 자동 구성
+
+BatchAutoConfiguration는 Spring Boot가 배치 환경을 자동으로 설정하는 중앙 통제소이다. 이번에는 BatchAutoConfiguration에서 무엇을 Bean 으로 등록하는지 살펴본다. 
+
+### JobLauncherApplicationRunner 등록
+
+`@ConditionalOnProperty`를 통해 스프링 배치의 활성화 여부를 결정한다.
+
+```java
+// BatchAutoConfiguration.jobLauncherApplicationRunner()
+@Bean
+@ConditionalOnMissingBean
+@ConditionalOnProperty(prefix = "spring.batch.job", name = "enabled", havingValue = "true", matchIfMissing = true)
+public JobLauncherApplicationRunner jobLauncherApplicationRunner(JobLauncher jobLauncher, JobExplorer jobExplorer,
+		JobRepository jobRepository, BatchProperties properties) {
+		
+    JobLauncherApplicationRunner runner = new JobLauncherApplicationRunner(jobLauncher, jobExplorer, jobRepository);
+    String jobName = properties.getJob().getName();
+    if (StringUtils.hasText(jobName)) {
+	runner.setJobName(jobName);
+    }
+    return runner;
+}
+```
+
+`@ConditionalOnProperty(prefix = "spring.batch.job", name = "enabled", havingValue = "true", matchIfMissing = true)` 에 대한 설명은 아래와 같다.
+
+- `spring.batch.job.enabled` 프로퍼티가 true인 경우 자동으로 `JobLauncherApplicationRunner 빈`을 등록한다.
+- `matchIfMissing = true` 옵션 덕분에 명시적으로 비활성화하지 않는 한 Spring Boot 는 항상 JobLauncherApplicationRunner 를 생성한다.
+
+### JobExecutionExitCodeGenerator 등록
+
+```java
+// BatchAutoConfiguration.jobExecutionExitCodeGenerator()
+@Bean
+@ConditionalOnMissingBean(ExitCodeGenerator.class)
+public JobExecutionExitCodeGenerator jobExecutionExitCodeGenerator() {
+    return new JobExecutionExitCodeGenerator();
+}
+```
+
+BatchAutoConfiguration은 위와 같이 JobExecutionExitCodeGenerator도 빈 객체로 등록한다.
+
+JobExecutionExitCodeGenerator는 배치 작업의 종료 상태에 따라 애플리케이션의 종료 코드를 생성한다. 배치 작업이 실패하면 JVM이 오류 코드와 함께 종료되도록 하는 역할을 한다.
+
+자세한 내용은 추후 다룬다.
+
+## DefaultBatchConfiguration : 배치 핵심 인프라 관리
+
+DefaultBatchConfiguration는 Spring Batch의 모든 핵심 인프라 컴포넌트(`JobRepository`, `JobLauncher` 등)를 생성하고 구성하는 역할을 담당한다.
+
+DefaultBatchConfiguration가 Bean 객체로 등록하는 구체적인 컴포넌트는 아래와 같다.
+
+- JobRepository
+- JobExplorer
+- JobLauncher
+- JobRegistry
+- JobOperator
+- JobRegistryBeanPostProcessor
+- StepScope
+- JobScope
+
+```java
+@Configuration(proxyBeanMethods = false)
+@Import(ScopeConfiguration.class)
+public class DefaultBatchConfiguration implements ApplicationContextAware {
+    @Bean
+    public JobRepository jobRepository() throws BatchConfigurationException {
+    ... // 구체적인 생성 코드는 생략한다.
+  }
+  
+    @Bean
+    public JobLauncher jobLauncher(JobRepository jobRepository) throws BatchConfigurationException {
+    ... // 구체적인 생성 코드는 생략한다.
+    }
+	
+    @Bean
+    public JobExplorer jobExplorer() throws BatchConfigurationException {
+    ... // 구체적인 생성 코드는 생략한다.
+    }
+	
+    @Bean
+    public JobRegistry jobRegistry() throws BatchConfigurationException {
+    ... // 구체적인 생성 코드는 생략한다.
+    }
+  
+    @Bean
+    public JobRegistrySmartInitializingSingleton jobRegistrySmartInitializingSingleton(JobRegistry jobRegistry) throws BatchConfigurationException {
+    ... // 구체적인 생성 코드는 생략한다.
+    }
+}
+```
+
+### DefaultBatchConfiguration 커스터마이징
+
+DefaultBatchConfiguration에서는 아래와 같은 메서드를 `protected` 로 제공하여, 개발자가 직접 이를 상속받아 커스터마이징할 수 있도록 지원한다.
+
+```java
+protected DataSource getDataSource() {
+  ...
+}
+
+protected PlatformTransactionManager getTransactionManager() {
+  ...
+}
+
+protected String getTablePrefix() {
+  ...
+}
+
+protected TaskExecutor getTaskExecutor() {
+  ...
+}
+```
+
+커스터마이징 예시는 아래와 같다.
+
+```java
+@Configuration
+public class KillBatchCustomConfiguration extends DefaultBatchConfiguration {
+    @Override
+    protected ExecutionContextSerializer getExecutionContextSerializer() {
+        return new Jackson2ExecutionContextStringSerializer(); // ExecutionContext를 DefaultExecutionContextSerializer 대신 JSON 형태로 직렬화하도록 커스터마이징
+    }
+}
+```
+
+**다만 이렇게 직접 DefaultBatchConfiguration 를 상속받아 커스터마이징하는 것보다, `@EnableBatchProcessing` 를 사용하는 것이 더 깔끔하다.**
+
+이번에는 `@EnableBatchProcessing` 에 대해서 알아본다.
+
+## `@EnableBatchProcessing` : 배치 코어 컴포넌트 자동 구성
+
+위에서 살펴본 예시는 아래처럼 변경할 수 있다.
+
+```java
+// 기존 DefaultBatchConfiguration 상속방식
+@Configuration
+public class KillBatchCustomConfiguration extends DefaultBatchConfiguration {
+    @Override
+    protected ExecutionContextSerializer getExecutionContextSerializer() {
+        return new Jackson2ExecutionContextStringSerializer();
+    }
+}
+
+// @EnableBatchProcessing 방식
+@Configuration
+@EnableBatchProcessing(executionContextSerializerRef = "jacksonExecutionContextSerializer")
+public class KillBatchCustomConfiguration { // extends 제거
+    @Bean
+    public ExecutionContextSerializer jacksonExecutionContextSerializer() {
+        return new Jackson2ExecutionContextStringSerializer();
+    }
+}
+```
+
+### `@EnableBatchProcessing` 속성
+
+```java
+@Target(ElementType.TYPE)
+@Retention(RetentionPolicy.RUNTIME)
+@Documented
+@Import({ BatchRegistrar.class, ScopeConfiguration.class ... })
+public @interface EnableBatchProcessing {
+	String dataSourceRef() default "dataSource";
+	String transactionManagerRef() default "transactionManager";
+	String executionContextSerializerRef() default "executionContextSerializer";
+	String incrementerFactoryRef() default "incrementerFactory";
+	String jobKeyGeneratorRef() default "jobKeyGenerator";
+	String taskExecutorRef() default "taskExecutor";
+	String conversionServiceRef() default "conversionService";
+	String jobParametersConverterRef() default "jobParametersConverter";
+}
+```
+
+~Ref로 끝나는 속성에 Bean 객체의 이름을 설정하면 해당 배치 컴포넌트를 지정된 Bean 객체로 등록한다.
+
