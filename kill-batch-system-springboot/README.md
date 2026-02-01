@@ -3993,3 +3993,235 @@ ExecutionContext의 데이터는 직렬화되어 문자열로 변환된다. 이 
 ### Job 수준 ExecutionContext
 
 ![img.png](img/img47.png)
+
+# Spring Batch 의 AutoConfiguration
+
+## BatchAutoConfiguration
+
+BatchAutoConfiguration은 Spring Batch를 위한 컴포넌트들을 Spring Boot가 자동으로 등록하는 Configuration 이다.
+
+BatchAutoConfiguration은 아래와 같은 작업을 자동으로 수행한다.
+
+- `JobLauncherApplicationRunner` 생성
+  - 우리가 커맨드라인에서 전달한 인수를 읽어 배치를 실행해 주는 실행기를 등록
+- `BatchProperties` 바인딩
+  - spring.batch.job.name 같은 설정값들을 자바 객체로 매핑
+- `JobExecutionExitCodeGenerator` 등록
+  - 배치 실행 결과(성공/실패)를 운영체제가 이해할 수 있는 종료 코드(0, 1 등)로 변환
+- 데이터베이스 초기화
+  - `spring.batch.jdbc.initialize-schema` 설정이 켜져 있다면, 배치 메타데이터 테이블(JOB_INSTANCE 등)을 DB에 자동으로 생성
+
+이 덕분에, 별다른 설정없이 Spring Batch를 사용할 수 있게 된다.
+
+### SpringBootBatchConfiguration
+
+BatchAutoConfiguration 의 내부에 static class 인 SpringBootBatchConfiguration 가 선언되어 있다.
+
+```java
+public class BatchAutoConfiguration {
+    static class SpringBootBatchConfiguration extends DefaultBatchConfiguration {
+        //...
+    }
+}
+```
+
+SpringBootBatchConfiguration 는 DefaultBatchConfiguration 를 상속받아서, Spring Batch를 위해 필요한 Bean 들을 등록한다. 실제 컴포넌트의 생성은 DefaultBatchConfiguration 에서 이뤄진다.
+
+| 클래스명 | 역할 | 특징 |
+|------|----|----|
+|    DefaultBatchConfiguration  |  배치 인프라의 설계도  |   배치 인프라의 설계도	JobRepository, JobLauncher 등을 빈으로 정의 |
+|  SpringBootBatchConfiguration    |   Boot 전용 최적화 |   DefaultBatchConfiguration을 상속받아 Boot 환경에 맞춰 세팅 |
+
+
+그리고 DefaultBatchConfiguration 를 사용해서 원하는 컴포넌트를 커스터마이징할 수 있는데, 이는 바로 아래에서 다룬다.
+
+## SpringBootBatchConfiguration 와 DefaultBatchConfiguration
+
+SpringBootBatchConfiguration 는 개발자가 원하는 배치 컴포넌트만 교체할 수 있도록 지원한다.
+
+SpringBootBatchConfiguration 는 DefaultBatchConfiguration 을 상속받아서 구현되는데, DefaultBatchConfiguration 의 `protected` 메서드를 오버라이딩함으로써 Spring batch의 핵심 컴포넌트를 교체할 수 있다.
+
+```java
+// 커스텀 Configuration
+@Configuration
+public class KillBatchCustomConfiguration extends DefaultBatchConfiguration {
+
+    /**
+     * 이처럼 오버라이딩하여, ExecutionContext를 메타데이터 저장소에 저장할 때 사용될 직렬화 도구를 변경할 수 있다.
+     * 이 코드에서는 JSON 으로 직렬화하도록 커스텀되었다.
+     */
+    @Override
+    protected ExecutionContextSerializer getExecutionContextSerializer() {
+        return new Jackson2ExecutionContextStringSerializer();
+    }
+}
+```
+
+### DefaultBatchConfiguration 란?
+
+그렇다면 DefaultBatchConfiguration 이 도대체 무엇이길래, 이런 커스터마이징이 가능해질까?
+
+DefaultBatchConfiguration은 다음과 같은 Spring Batch 핵심 컴포넌트들을 자동으로 생성하고 애플리케이션 컨텍스트에 등록해준다.
+
+- JobRepository
+- JobExplorer
+- JobLauncher
+- JobRegistry
+- JobOperator
+- JobRegistryBeanPostProcessor
+- StepScope
+- JobScope
+
+DefaultBatchConfiguration 는 아래와 같이 작성되어 있다.
+
+```java
+@Configuration(proxyBeanMethods = false)
+@Import(ScopeConfiguration.class)
+public class DefaultBatchConfiguration implements ApplicationContextAware {
+    
+    // --------------------- 핵심 컴포넌트 Bean 등록 ------------------------
+    
+    @Bean
+    public JobRepository jobRepository() throws BatchConfigurationException {
+    ... // 구체적인 생성 코드는 생략한다.
+    }
+  
+    @Bean
+    public JobLauncher jobLauncher(JobRepository jobRepository) throws BatchConfigurationException {
+    ... // 구체적인 생성 코드는 생략한다.
+    }
+	
+    @Bean
+    public JobExplorer jobExplorer() throws BatchConfigurationException {
+    ... // 구체적인 생성 코드는 생략한다.
+    }
+	
+    @Bean
+    public JobRegistry jobRegistry() throws BatchConfigurationException {
+    ... // 구체적인 생성 코드는 생략한다.
+    }
+  
+    @Bean
+    public JobRegistrySmartInitializingSingleton jobRegistrySmartInitializingSingleton(JobRegistry jobRegistry) throws BatchConfigurationException {
+    ... // 구체적인 생성 코드는 생략한다.
+    }
+    
+    // ------------------------- 커스터마이징을 위해 오버라이딩 가능한 메서드 -------------------------
+    protected DataSource getDataSource() {
+    ...
+    }
+
+    protected PlatformTransactionManager getTransactionManager() {
+    ...
+    }
+
+    protected String getTablePrefix() {
+    ...
+    }
+
+    protected TaskExecutor getTaskExecutor() {
+    ...
+    }
+}
+```
+
+위처럼 "핵심 컴포넌트들을 Bean으로 등록하는 메서드"와, "각 getter 메서드"로 구성되어 있다.
+
+여기서 getter 메서드를 오버라이딩하여 컴포넌트 교체를 할 수 있다.
+
+## `@EnableBatchProcessing`
+
+DefaultBatchConfiguration 를 상속받아 직접 구현하는 것 대신, `@EnableBatchProcessing` 애너테이션을 활용하는 방법도 존재한다.
+
+```java
+@Configuration
+@EnableBatchProcessing(executionContextSerializerRef = "jacksonExecutionContextSerializer") //교체할 컴포넌트 Bean 명시
+public class BatchConfig {
+
+    // DataSource, TransactionManager 정의
+
+    @Bean
+    public ExecutionContextSerializer jacksonExecutionContextSerializer() {
+        return new Jackson2ExecutionContextStringSerializer();
+    }
+}
+```
+
+`@EnableBatchProcessing`의 배치 코어 컴포넌트 커스터마이징 접근법은 DefaultBatchConfiguration과 다르다. 메서드 오버라이드 대신 커스텀 빈을 정의하고, 어노테이션 속성에 해당 빈 이름을 지정하는 방식으로 커스터마이징한다.
+
+## DefaultBatchConfiguration 상속 / `@EnableBatchProcessing` 애너테이션 방식의 커스터마이징 사용시, 주의사항
+
+`@EnableBatchProcessing`을 사용하거나 DefaultBatchConfiguration을 직접 상속하면, Spring Boot가 제공하던 자동 실행(JobLauncherApplicationRunner) 기능을 제공받지 못한다.
+
+이는 위에서 살펴본 BatchAutoConfiguration 클래스를 보면 알 수 있다.
+
+```java
+// DefaultBatchConfiguration 를 상속받은 Bean 이 있거나, EnableBatchProcessing 애너테이션을 사용하는 Bean이 있다면, BatchAutoConfiguration 생성 X
+@ConditionalOnMissingBean(value = DefaultBatchConfiguration.class, annotation = EnableBatchProcessing.class)
+public class BatchAutoConfiguration {
+    //..
+}
+```
+
+따라서 아래 방법을 쓰는 것이 가장 추천된다.
+
+## Bean으로 직접 등록 : 가장 추천되는 컴포넌트 커스터마이징 방법
+
+Spring Batch의 컴포넌트를 변경할 때, 가장 추천되는 방법은 아래처럼 직접 해당 컴포넌트를 Bean으로 등록하는 것이다. 
+
+```java
+@Configuration
+public class KillBatchCustomConfiguration {
+
+    //교체할 Spring Batch 컴포넌트를 Bean으로 등록
+    @Bean
+    public ExecutionContextSerializer executionContextSerializer() {
+        return new Jackson2ExecutionContextStringSerializer();
+    }
+}
+```
+
+이것이 가능한 이유는 SpringBootBatchConfiguration 가 주입받은 빈들을 활용해 DefaultBatchConfiguration의 메서드들을 오버라이드했기 때문이다.
+
+아래처럼 말이다.
+
+```java
+public class BatchAutoConfiguration {
+    //...
+
+    static class SpringBootBatchConfiguration extends DefaultBatchConfiguration {
+        /**
+         * SpringBootBatchConfiguration 의 생성자.
+         * 현재 Context에 있는 Bean 객체들을 가져와, 필드에 세팅한다.
+         */
+        SpringBootBatchConfiguration(DataSource dataSource, @BatchDataSource ObjectProvider<DataSource> batchDataSource,
+                                     PlatformTransactionManager transactionManager,
+                                     @BatchTransactionManager ObjectProvider<PlatformTransactionManager> batchTransactionManager,
+                                     @BatchTaskExecutor ObjectProvider<TaskExecutor> batchTaskExecutor, BatchProperties properties,
+                                     ObjectProvider<BatchConversionServiceCustomizer> batchConversionServiceCustomizers,
+                                     ObjectProvider<ExecutionContextSerializer> executionContextSerializer) {
+            this.dataSource = batchDataSource.getIfAvailable(() -> dataSource);
+            this.transactionManager = batchTransactionManager.getIfAvailable(() -> transactionManager);
+            this.taskExector = batchTaskExecutor.getIfAvailable();
+            this.properties = properties;
+            this.batchConversionServiceCustomizers = batchConversionServiceCustomizers.orderedStream().toList();
+            this.executionContextSerializer = executionContextSerializer.getIfAvailable();
+        }
+
+        /**
+         * DefaultBatchConfiguration 의 메서드 오버라이딩.
+         * 생성자 주입으로 세팅된 필드를 반환하도록 한다.
+         * 이를 통해, 원하는 컴포넌트를 Bean 객체로 등록하기만 해도 알아서 교체될 수 있다.
+         */
+        @Override
+        protected PlatformTransactionManager getTransactionManager() {
+            return this.transactionManager;
+        }
+        
+        //...
+    }
+}
+```
+
+## `@BatchXXX` 애너테이션의 역할
+
