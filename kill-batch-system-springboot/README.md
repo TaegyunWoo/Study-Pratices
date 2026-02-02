@@ -4225,3 +4225,98 @@ public class BatchAutoConfiguration {
 
 ## `@BatchXXX` 애너테이션의 역할
 
+Spring Batch의 특정 컴포넌트를 교체할 때, 단순히 해당 컴포넌트를 Bean으로 등록하면 된다고 설명했었다. 그런데 이때 만약 여러 개의 동일 타입 Bean 이 존재한다면, 어떤 Bean 을 주입해야 할지 모호해진다.
+
+예를 들어, PlatformTransactionManager 타입의 Bean 이 2개 이상 존재한다면, SpringBootBatchConfiguration 에서는 어떤 Bean 을 주입해야 할지 알 수 없다.
+
+이 문제를 해결하기 위해, Spring Batch 는 `@BatchDataSource` , `@BatchTransactionManager` , `@BatchTaskExecutor` , `@BatchXXX` 애너테이션을 제공한다.
+
+위에서 살펴본 SpringBootBatchConfiguration 의 생성자를 보면, `@BatchDataSource` , `@BatchTransactionManager` , `@BatchTaskExecutor` , `@BatchXXX` 애너테이션이 붙은 빈들을 주입받는 것을 알 수 있다.
+
+이 애너테이션들은 특정 타입의 빈이 여러 개 존재할 때, Spring Batch를 위한 빈을 명확하게 구분하기 위한 한정자(Qualifier) 역할을 한다
+
+따라서 여러 개의 동일 타입 Bean 이 존재하더라도, `@BatchXXX` 애너테이션을 붙인 Bean 만 주입받게 되어 모호성이 해결된다.
+
+예를 들어, 아래와 같이 `@BatchTransactionManager` 애너테이션을 붙인 PlatformTransactionManager 빈을 정의할 수 있다.
+
+```java
+@Configuration
+public class KillBatchCustomConfiguration {
+    @Bean
+    @BatchTransactionManager // 이 애너테이션이 붙은 Bean 만 Spring Batch 에서 사용된다.
+    public PlatformTransactionManager batchTransactionManager(DataSource dataSource) {
+        return new DataSourceTransactionManager(dataSource);
+    }
+}
+```
+
+이제 SpringBootBatchConfiguration 에서는 `@BatchTransactionManager` 애너테이션이 붙은 빈을 주입받아, Spring Batch 의 트랜잭션 매니저로 사용하게 된다.
+
+### TransactionManager 분리하기
+
+위처럼 TransactionManager 를 분리하는 것은 중요하다.
+
+우리가 직접 TransactionManager 빈을 구성하지 않으면, Spring Boot는 기본적으로 하나의 TransactionManager를 생성하여 **배치 메타데이터와 실제 비즈니스 데이터베이스에 모두 동일한 트랜잭션 관리자를 적용**한다.
+
+일반적으로 비즈니스 데이터를 다루는 DB와 배치 메타데이터를 다루는 DB는 분리하여 관리된다. 따라서 배치 메타데이터용 TransactionManager와 비즈니스 데이터용 TransactionManager를 분리하는 것이 바람직하다.
+
+이를 위해 `@BatchTransactionManager` 애너테이션을 활용하여, 배치 메타데이터용 TransactionManager를 별도로 정의할 수 있다. 전체 예시는 아래와 같다.
+
+```java
+@Configuration
+public class TransactionManagerConfig {
+
+    // 비즈니스 데이터 처리를 위한 메인 데이터 소스
+    @Bean
+    @Primary //일반 트랜잭션 매니저에 사용될 데이터 소스
+    public DataSource dataSource() {
+        return DataSourceBuilder.create()
+                .url("jdbc:mysql://localhost:3306/target_system")
+                .username("root")
+                .password("1q2w3e")
+                .build();
+    }
+
+    // Spring Batch 메타데이터 저장을 위한 데이터 소스
+    @Bean
+    @BatchDataSource //배치 메타데이터에 사용될 데이터 소스
+    public DataSource batchDataSource() {
+        return DataSourceBuilder.create()
+                .url("jdbc:mysql://localhost:3306/batch_control")
+                .username("kill9")
+                .password("d3str0y3r")
+                .build();
+    }
+
+    // 비즈니스 데이터 처리용 JPA 트랜잭션 매니저
+    @Bean
+    @Primary //일반 트랜잭션 매니저에 사용될 트랜잭션 매니저
+    public PlatformTransactionManager transactionManager(EntityManagerFactory entityManagerFactory) {
+        return new JpaTransactionManager(entityManagerFactory);
+    }
+
+    // Spring Batch 메타데이터용 트랜잭션 매니저
+    @Bean
+    @BatchTransactionManager //배치 메타데이터에 사용될 트랜잭션 매니저
+    public PlatformTransactionManager batchTransactionManager(@BatchDataSource DataSource dataSource) {
+        return new JdbcTransactionManager(dataSource);
+    }
+}
+```
+
+이렇게 데이터소스와 트랜잭션 매니저를 분리하면, 각 트랜잭션이 독립적으로 동작하여 상호 간의 기술적 충돌이나 간섭을 방지할 수 있다.
+
+### **트랜잭션 매니저 분리시 주의사항**
+
+단, 이렇게 트랜잭션 매니저를 분리할 경우 반드시 주의해야 할 사항이 있다. 트랜잭션 정책이 분리되었기 때문에 데이터 불일치 문제가 발생할 수 있다.
+
+예를 들어, 배치 메타데이터 트랜잭션 매니저가 커밋되었지만, 비즈니스 데이터 트랜잭션 매니저가 롤백되는 상황이 발생할 수 있다. 이로 인해 배치 메타데이터와 실제 비즈니스 데이터 간에 불일치가 생길 수 있다.
+
+이런 문제를 해결하기 위해서는 두 가지 방법을 고려해볼 수 있다.
+
+- XA DataSource와 JTA TransactionManager를 사용하여 분산 트랜잭션을 구성하는 방법
+  - 이렇게 처리하면 두 트랜잭션 매니저가 하나의 글로벌 트랜잭션으로 묶이게 되어, 일관성을 유지할 수 있다.
+  - 단, 분산 트랜잭션은 시스템 복잡성을 증가시키고 성능에 영향을 미칠 수 있으므로 신중히 고려해야 한다.
+- 이런 데이터 불일치 위험을 감안하고 적절한 모니터링 및 복구 메커니즘을 구축하는 방법
+  - 완벽한 일관성이 필요한 비즈니스가 아니라면, 대부분의 경우 이 방법으로 충분하다.
+
