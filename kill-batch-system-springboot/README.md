@@ -4320,3 +4320,219 @@ public class TransactionManagerConfig {
 - 이런 데이터 불일치 위험을 감안하고 적절한 모니터링 및 복구 메커니즘을 구축하는 방법
   - 완벽한 일관성이 필요한 비즈니스가 아니라면, 대부분의 경우 이 방법으로 충분하다.
 
+# 커맨드라인에서의 ExitCode 조작
+
+## ExitCode 기본 동작
+
+Spring Batch 애플리케이션을 커맨드라인에서 실행할 때, 배치 작업의 성공 또는 실패에 따라 운영체제에 반환되는 종료 코드(Exit Code)를 조작할 수 있다.
+
+```shell
+> ./gradlew clean build
+> cd ./build/libs
+> java -jar kill-batch-system-0.0.1-SNAPSHOT.jar --spring.batch.job.name=brutalizedSystemJob chaos=true,java.lang.Boolean
+> echo $?
+> 0
+
+Process finished with exit code 0
+```
+
+위와 같이, 배치 작업이 성공적으로 완료되면 운영체제에 `0`을 반환한다. 중요한 것은 **배치 작업이 실패한 경우에도 `0`을 반환**한다는 것이다.
+
+이는 Spring Batch의 기본 동작 방식이다. 배치 작업이 실패하더라도, 애플리케이션 자체는 정상적으로 종료되었기 때문에 운영체제에 `0`을 반환한다.
+
+### ExitCode 변경하기
+
+이를 해결하기 위해선, 스프링 부트 main 메서드를 아래와 같이 수정해야한다.
+
+```java
+@SpringBootApplication
+public class KillBatchSystemApplication {
+
+    public static void main(String[] args) {
+        // SpringApplication.run(KillBatchSystemApplication.class, args); 기존 코드
+        // 아래처럼 수정
+	    System.exit(SpringApplication.exit(SpringApplication.run(KillBatchSystemApplication.class, args)));
+    }
+}
+```
+
+이는 아래와 같이 동작한다.
+
+1. `SpringApplication.run()` 메서드를 호출하여 애플리케이션을 실행한다.
+2. `SpringApplication.exit()` 메서드를 호출하여 애플리케이션의 종료 코드를 가져온다.
+3. `System.exit()` 메서드를 호출하여 운영체제에 종료 코드를 반환한다.
+
+## JobExecutionExitCodeGenerator
+
+`SpringApplication.exit()` 메서드는 `ExitCodeGenerators` 를 사용해 종료 코드를 반환한다.
+
+```java
+// SpringApplication.exit()
+public static int exit(ApplicationContext context, ExitCodeGenerator... exitCodeGenerators) {
+    ...
+    ExitCodeGenerators generators = new ExitCodeGenerators();
+    Collection<ExitCodeGenerator> beans = context.getBeansOfType(ExitCodeGenerator.class).values();
+    generators.addAll(exitCodeGenerators);
+    generators.addAll(beans);
+
+    ...
+  
+    exitCode = generators.getExitCode();
+    return exitCode;
+}
+```
+
+이 때 별도의 구성을 하지 않은 경우, Spring Boot는 기본적으로 JobExecutionExitCodeGenerator 를 자동으로 등록한다.
+
+JobExecutionExitCodeGenerator 는 **Spring Batch의 JobExecution 상태를 기반으로 종료 코드를 생성**한다. 관련 코드는 아래와 같다.
+
+```java
+// JobExecutionExitCodeGenerator.getExitCode()
+@Override 
+public int getExitCode() { 
+    for (JobExecution execution : this.executions) { 
+        if (execution.getStatus().ordinal() > 0) { 
+            return execution.getStatus().ordinal(); 
+        } 
+    } 
+    return 0; 
+}
+```
+
+JobExecution의 BatchStatus enum의 ordinal 값이 종료 코드로 사용되고 있다. BatchStatus enum의 ordinal 값은 다음과 같다.
+
+- COMPLETED = 0
+- STARTING = 1
+- STARTED = 2
+- STOPPING = 3
+- STOPPED = 4
+- FAILED = 5
+- ABANDONED = 6
+- UNKNOWN = 7
+
+따라서 JobExecution이 `COMPLETED` 상태인 경우에만 `0`을 반환하고, 그 외의 상태에서는 해당 상태의 ordinal 값을 반환한다.
+
+## 세밀한 ExitCode 제어
+
+단순히 JobExecution의 상태에 따른 종료 코드 반환이 아닌, 보다 세밀한 제어가 필요할 때가 있다. 개발자가 직접 원하는 종료 코드를 반환할 수 있는데, 이 경우 전체적인 흐름은 아래와 같다.
+
+1. ExitStatus 설정: Tasklet에서 StepContribution에 커스텀 상태값을 명시적으로 기록. 
+2. JobListener 감지: JobExecutionListener의 afterJob 단계에서 최종 ExitStatus를 획득. 
+3. ExitCode 변환: ExitCodeGenerator가 문자열을 사전에 정의된 정수(3, 4, 5 등)로 변환. 
+4. 시스템 종료: SpringApplication.exit()를 통해 해당 숫자를 OS에 반환.
+
+이제 하나씩 살펴보겠다.
+
+### 1. ExitStatus 설정
+
+```java
+@Bean
+@StepScope
+public Tasklet brutalizedSystemTasklet(
+        @Value("#{jobParameters['chaos']}") Boolean chaos,
+        @Value("#{jobParameters['chaosType']}") String chaosType) {
+
+    return (contribution, chunkContext) -> {
+        try {
+            log.info("KILL-9 FINAL TERMINATOR :: SYSTEM INITIALIZATION");
+            if (chaos) {
+                switch (chaosType) {
+                    case "SKULL_FRACTURE":
+                        throw new IllegalStateException("두개골 골절 발생! 얼굴이 반으로 갈라졌다!");
+                    case "SYSTEM_BRUTALIZED":
+                        throw new ValidationException("시스템 유효성 검증 실패! 해골 구조가 물리 법칙을 위반했다!");
+                    default:
+                        throw new IllegalArgumentException("알 수 없는 혼돈 유형! 시스템 붕괴!");
+                }
+            }
+            log.info("kill9@terminator:~$ TO FIX A BUG, KILL THE PROCESS");
+            return RepeatStatus.FINISHED; // 정상 종료
+        } catch (IllegalStateException e) {
+            contribution.setExitStatus(new ExitStatus("SKULL_FRACTURE", e.getMessage())); // 커스텀 ExitStatus 설정 1
+            throw e;
+        } catch (ValidationException e) {
+            contribution.setExitStatus(new ExitStatus("SYSTEM_BRUTALIZED", e.getMessage())); // 커스텀 ExitStatus 설정 2
+            throw e;
+        } catch (IllegalArgumentException e) {
+            contribution.setExitStatus(new ExitStatus("UNKNOWN_CHAOS", e.getMessage())); // 커스텀 ExitStatus 설정 3
+            throw e;
+        }
+    };
+}
+```
+
+catch 절에서 각 예외 타입별로 적절한 사용자 정의 ExitStatus를 StepContribution에 설정한다. (위 예시에선 catch 절에서 ExitStatus 를 설정하고 있지만, Tasklet 내부 비즈니스 로직에서도 당연히 ExitStatus를 설정할 수 있다.)
+
+> #### StepContribution
+> 
+> StepContribution은 Step 실행 중에 발생하는 상태 변경 사항을 나타내는 객체다. Step 내에서 처리된 아이템 수, 커밋 횟수, 스킵된 아이템 수 등 다양한 실행 정보를 추적하고 기록하는 역할을 한다. 또한, Step의 ExitStatus를 설정하는 기능도 제공한다.
+
+### 2. JobListener 감지
+
+이제 Spring Batch 에서 기본으로 사용하는 JobExecutionExitCodeGenerator 대신 직접 구현한 ExitCodeGenerator 를 등록해야 한다. 이때 JobExecutionListener 를 함께 구현하여, Job 종료 시점에 최종 ExitStatus를 획득하도록 한다.
+
+```java
+/**
+ * ExitCodeGenerator 와 JobExecutionListener 를 함께 구현하여,
+ * Job 종료 시점에 최종 ExitStatus를 획득하고, 이를 기반으로 시스템 종료 코드를 생성한다.
+ */
+@Component //Bean 등록
+@Slf4j
+public class BrutalizedSystemExitCodeGenerator implements JobExecutionListener, ExitCodeGenerator {  
+    private static int EXITCODE_SKULL_FRACTURE = 3;  
+    private static int EXITCODE_SYSTEM_BRUTALIZED = 4;  
+    private static int EXITCODE_UNKNOWN_CHAOS = 5;  
+  
+    // SimpleJvmExitCodeMapper 는 Spring Batch가 제공하는 유틸리티 클래스로, ExitStatus 문자열을 정수로 매핑해준다.
+    private final SimpleJvmExitCodeMapper exitCodeMapper = new SimpleJvmExitCodeMapper();  
+  
+    private int exitCode = 0;
+
+    /**
+     * 생성자에서 커스텀 ExitStatus 문자열과 매핑되는 시스템 종료 코드를 정의한다.
+     */
+    public BrutalizedSystemExitCodeGenerator() {  
+        exitCodeMapper.setMapping(Map.of(  
+                "SKULL_FRACTURE", EXITCODE_SKULL_FRACTURE,  
+                "SYSTEM_BRUTALIZED", EXITCODE_SYSTEM_BRUTALIZED,
+                "666_UNKNOWN_CHAOS", EXITCODE_UNKNOWN_CHAOS));  
+    }
+
+    /**
+     * OS에 전달할 종료 코드를 반환한다.
+     */
+    @Override  
+    public int getExitCode() {  
+        return exitCode;  
+    }  
+  
+    /**
+     * Job 종료 시점에 호출되어, 최종 ExitStatus를 획득하고 시스템 종료 코드를 설정한다.
+     * 결과적으로 여기서 설정한 exitCode 값이 getExitCode()를 통해 반환된다.
+     */
+    @Override  
+    public void afterJob(JobExecution jobExecution) {  
+        String exitStatus = jobExecution.getExitStatus().getExitCode();  
+  
+        this.exitCode = exitCodeMapper.intValue(exitStatus);  
+        log.info("Exit Status: {}", exitStatus);  
+        log.info("System Exit Code: {}", exitCode);  
+    }
+}
+```
+
+위처럼 JobExecutionListener 의 afterJob() 메서드에서 최종 ExitStatus를 획득하고, SimpleJvmExitCodeMapper 를 사용해 미리 정의한 정수 종료 코드로 변환한다.
+
+이제 이 컴포넌트를 Spring Batch 리스너로 등록해야 한다.
+
+```java
+@Bean
+public Job brutalizedSystemJob() {
+    return new JobBuilder("brutalizedSystemJob", jobRepository)
+            .start(brutalizedSystemStep())
+            .listener(brutalizedSystemExitCodeGenerator) //리스너 등록
+            .build();
+}
+```
+
+이제 Job이 종료될 때마다 BrutalizedSystemExitCodeGenerator 가 호출되어, 최종 ExitStatus를 기반으로 시스템 종료 코드를 설정하게 된다.
