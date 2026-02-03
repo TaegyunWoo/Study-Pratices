@@ -4543,9 +4543,9 @@ Spring Batch는 REST API를 통해 배치 작업을 실행하고 관리할 수 �
 
 JobLauncher와 JobOperator를 활용해 단순히 Job을 실행하는 것뿐만 아니라, 실행 중인 Job을 중지하고 필요에 따라 재시작할 수도 있다.
 
-## 환경 구성
+## 환경 구성 및 API 작성
 
-우선 아래와 같이 환경을 구성한다.
+우선 아래와 같이 환경을 구성한다. 이어서 API를 작성하는 방법에 대해 알아본다.
 
 ### 1. 의존성
 
@@ -4671,8 +4671,37 @@ public class JobLauncherController {
 > 
 > - [batch-system-with-mvc/src/main/java/com/system/batch/mvc/controllers/JobLauncherController.java](batch-system-with-mvc/src/main/java/com/system/batch/mvc/controllers/JobLauncherController.java) : 서브모듈 컨트롤러 파일
 
+### 5. Batch 비동기 실행 처리
 
+별도의 구성을 하지 않을 경우, JobLauncher 인터페이스의 구현체 `TaskExecutorJobLauncher`는 기본적으로 **동기 방식의 `SyncTaskExecutor`를 사용한다.**
 
+이는 배치 작업이 완료될 때까지 요청 스레드가 블로킹된다는 의미다. 하지만 배치 작업은 수 분에서 수 시간까지 걸릴 수 있기에, 동기적으로 응답하도록 처리하면 타임아웃이 발생하는 등의 문제가 야기될 수 있다.
+
+따라서 이때는 비동기 방식의 TaskExecutor를 사용하도록 JobLauncher를 커스텀해야 한다.
+
+```java
+@Configuration
+public class BatchCustomConfiguration {
+    @Bean
+    @BatchTaskExecutor
+    public TaskExecutor taskExecutor() {
+        SimpleAsyncTaskExecutor executor = new SimpleAsyncTaskExecutor();
+        return executor;
+    }
+}
+```
+
+위와 같이 `@BatchTaskExecutor` 를 사용하여 `SimpleAsyncTaskExecutor`를 TaskExecutor 로 사용하도록 변경한다.
+
+그럼 Spring Boot가 자동으로 이 TaskExecutor를 JobLauncher에 주입하여 배치 작업이 비동기적으로 실행되게 된다. 이제 REST API를 호출하면 즉시 응답을 받을 수 있고, 배치 작업은 별도의 스레드에서 계속 실행될 것이다.
+
+이렇게 커스터마이징하는 방식에 대해서는, 위에서 살펴본 `@BatchXXX 애너테이션의 역할` 섹션을 참고하자.
+
+> #### 참고
+> 
+> - [batch-system-with-mvc/src/main/java/com/system/batch/mvc/config/BatchCustomConfiguration.java](batch-system-with-mvc/src/main/java/com/system/batch/mvc/config/BatchCustomConfiguration.java)
+
+### 6. API 실행
 
 
 

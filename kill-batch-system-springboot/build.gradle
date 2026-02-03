@@ -39,9 +39,6 @@ subprojects {
         // https://mvnrepository.com/artifact/org.apache.commons/commons-lang3
         implementation 'org.apache.commons:commons-lang3:3.12.0'
 
-        // Swagger
-        implementation group: 'org.springdoc', name: 'springdoc-openapi-ui', version: '1.6.12'
-
         testImplementation 'org.springframework.boot:spring-boot-starter-test'
         testImplementation 'org.springframework.batch:spring-batch-test'
         testImplementation 'org.junit.jupiter:junit-jupiter-api:5.8.1'

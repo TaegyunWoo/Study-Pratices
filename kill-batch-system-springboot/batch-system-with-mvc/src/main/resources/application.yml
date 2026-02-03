@@ -16,3 +16,9 @@ spring:
 logging:
   level:
     org.springframework.batch.item.database: DEBUG
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    groups-order: DESC
+    operations-sorter: method
+    disable-swagger-default-url: true
