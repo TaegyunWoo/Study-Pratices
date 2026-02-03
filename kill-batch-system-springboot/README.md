@@ -4543,8 +4543,89 @@ Spring Batch는 REST API를 통해 배치 작업을 실행하고 관리할 수 �
 
 JobLauncher와 JobOperator를 활용해 단순히 Job을 실행하는 것뿐만 아니라, 실행 중인 Job을 중지하고 필요에 따라 재시작할 수도 있다.
 
+## 환경 구성
 
+우선 아래와 같이 환경을 구성한다.
 
+### 1. 의존성
+
+```groovy
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-batch'
+    implementation 'org.springframework.boot:spring-boot-starter-json'
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+
+    compileOnly 'org.projectlombok:lombok'
+    runtimeOnly 'org.postgresql:postgresql'
+
+    annotationProcessor 'org.projectlombok:lombok'
+
+    testAnnotationProcessor 'org.projectlombok:lombok'
+
+    testCompileOnly 'org.projectlombok:lombok'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'org.springframework.batch:spring-batch-test'
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.8.1'
+    testImplementation 'org.junit.jupiter:junit-jupiter-engine:5.8.1'
+    testImplementation 'org.junit.platform:junit-platform-commons:1.8.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+```
+
+> #### 참고
+> 
+> 본 프로젝트는 멀티모듈로 구성되어 있어, 아래 2개 파일을 참고해야 한다.
+> 
+> - [build.gradle](build.gradle) : 서브모듈 공통 속성 파일
+> - [batch-system-with-mvc/build.gradle](batch-system-with-mvc/build.gradle) : 서브모듈 build.gradle 파일
+
+### 2. application.yml
+
+```yaml
+spring:
+  batch:
+    job:
+      enabled: false # Spring Batch 자동 실행 비활성화 for mvc app
+  datasource:
+    url: jdbc:postgresql://localhost:5432/postgres
+    driver-class-name: org.postgresql.Driver
+    username: root
+    password: password
+  jpa:
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        highlight_sql: true
+logging:
+  level:
+    org.springframework.batch.item.database: DEBUG
+```
+
+Tomcat 으로 동작하는 애플리케이션이기 때문에, `spring.batch.job.enabled` 속성을 `false`로 설정하여 애플리케이션 시작 시점에 자동으로 Job이 실행되지 않도록 한다.
+
+> #### 참고
+> 
+> - [batch-system-with-mvc/src/main/resources/application.yml](batch-system-with-mvc/src/main/resources/application.yml) : 서브모듈 application.yml 파일
+
+### 3. Main Application
+
+```java
+@SpringBootApplication
+public class BatchSystemWithMvcApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(BatchSystemWithMvcApplication.class, args);
+    }
+}
+```
+
+위와 같이 일반적인 Spring Boot 애플리케이션으로 작성한다.
+
+> #### 참고
+> 
+> - [batch-system-with-mvc/src/main/java/com/system/batch/mvc/BatchSystemWithMvcApplication.java](batch-system-with-mvc/src/main/java/com/system/batch/mvc/BatchSystemWithMvcApplication.java) : 서브모듈 Main Application 파일
 
 
 
