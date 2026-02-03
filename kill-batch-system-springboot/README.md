@@ -4627,5 +4627,52 @@ public class BatchSystemWithMvcApplication {
 > 
 > - [batch-system-with-mvc/src/main/java/com/system/batch/mvc/BatchSystemWithMvcApplication.java](batch-system-with-mvc/src/main/java/com/system/batch/mvc/BatchSystemWithMvcApplication.java) : 서브모듈 Main Application 파일
 
+### 4. 컨트롤러 작성
+
+```java
+@RestController
+@RequestMapping("/api/jobs")
+@RequiredArgsConstructor
+public class JobLauncherController {
+    private final JobRegistry jobRegistry;
+    private final JobLauncher jobLauncher;
+    private final JobExplorer jobExplorer;
+
+    @PostMapping("/{jobName}/start")
+    public ResponseEntity<String> launchJob(
+            @PathVariable String jobName
+    ) throws Exception {
+        Job job;
+        try {
+            job = jobRegistry.getJob(jobName); // 1. JobRegistry 를 통해 Job 조회
+        } catch (NoSuchJobException e) {
+            return ResponseEntity.badRequest().body("Unknown job name: " + jobName);
+        }
+
+        JobParameters jobParameters = new JobParametersBuilder(jobExplorer) // 2. JobParameters 생성
+                .getNextJobParameters(job)
+                .toJobParameters();
+
+        JobExecution execution = jobLauncher.run(job, jobParameters); // 3. JobLauncher 를 통해 Job 실행
+        return ResponseEntity.ok("Job launched with ID: " + execution.getId()); // 4. 실행 결과 반환
+    }
+}
+```
+
+먼저 `JobRegistry`에서 빈의 이름으로 Job을 조회하고, `JobParametersBuilder`와 `JobExplorer`를 활용해 이전 실행 이력을 기반으로 새로운 `JobParameters`를 생성한다. 마지막으로 `JobLauncher`의 `run()` 메서드를 호출해 Job을 실행하고 그 결과로 `JobExecution`을 받아 클라이언트에 응답한다.
+
+이는 이전에 살펴본 `JobLauncherApplicationRunner` 의 동작방식과 유사하다.
+
+- `JobLauncher` : Job 실행을 담당하는 컴포넌트이다. 실제 Job 실행을 담당하는 진입점 역할을 한다.
+- `JobRegistry` : Spring Batch의 표준 Job 관리소다. 등록된 모든 Job들을 이름으로 조회할 수 있는 중앙 집중식 저장소 역할을 하는 컴포넌트이다.
+- `JobExplorer` : 배치 메타데이터를 조회하는 컴포넌트이다. JobParametersBuilder와 함께 사용되어 이전 실행 이력을 바탕으로 다음 JobParameters를 생성한다.
+
+> #### 참고
+> 
+> - [batch-system-with-mvc/src/main/java/com/system/batch/mvc/controllers/JobLauncherController.java](batch-system-with-mvc/src/main/java/com/system/batch/mvc/controllers/JobLauncherController.java) : 서브모듈 컨트롤러 파일
+
+
+
+
 
 
