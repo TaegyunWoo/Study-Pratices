@@ -18,8 +18,8 @@
 
 ## 예시 코드
 
-- [src/main/java/com/system/batch/tasklet/ZombieProcessCleanupTasklet.java](src/main/java/com/system/batch/tasklet/ZombieProcessCleanupTasklet.java)
-- [src/main/java/com/system/batch/config/ZombieBatchConfig.java](src/main/java/com/system/batch/config/ZombieBatchConfig.java)
+- [batch-system/src/main/java/com/system/batch/tasklet/ZombieProcessCleanupTasklet.java](batch-system/src/main/java/com/system/batch/tasklet/ZombieProcessCleanupTasklet.java)
+- [batch-system/src/main/java/com/system/batch/config/ZombieBatchConfig.java](batch-system/src/main/java/com/system/batch/config/ZombieBatchConfig.java)
 
 # 청크 지향 처리
 
@@ -750,8 +750,8 @@ public interface ItemWriteListener<S> extends StepListener {
 
 ### 구현 방법 1) 전용 리스너 인터페이스를 직접 구현하는 방식
 
-- [src/main/java/com/system/batch/lesson/listener/BigBrotherJobExecutionListener.java](src/main/java/com/system/batch/lesson/listener/BigBrotherJobExecutionListener.java)
-- [src/main/java/com/system/batch/lesson/listener/BigBrotherStepExecutionListener.java](src/main/java/com/system/batch/lesson/listener/BigBrotherStepExecutionListener.java)
+- [batch-system/src/main/java/com/system/batch/lesson/listener/BigBrotherJobExecutionListener.java](batch-system/src/main/java/com/system/batch/lesson/listener/BigBrotherJobExecutionListener.java)
+- [batch-system/src/main/java/com/system/batch/lesson/listener/BigBrotherStepExecutionListener.java](batch-system/src/main/java/com/system/batch/lesson/listener/BigBrotherStepExecutionListener.java)
 - 리스너 등록
   - ```java
     @Bean
@@ -765,8 +765,8 @@ public interface ItemWriteListener<S> extends StepListener {
 
 ### 구현 방법 2) 리스너 특화 애너테이션을 사용하는 방식
 
-- [src/main/java/com/system/batch/lesson/listener/ServerRackControlListener.java](src/main/java/com/system/batch/lesson/listener/ServerRackControlListener.java)
-- [src/main/java/com/system/batch/lesson/listener/ServerRoomInfiltrationListener.java](src/main/java/com/system/batch/lesson/listener/ServerRoomInfiltrationListener.java)
+- [batch-system/src/main/java/com/system/batch/lesson/listener/ServerRackControlListener.java](batch-system/src/main/java/com/system/batch/lesson/listener/ServerRackControlListener.java)
+- [batch-system/src/main/java/com/system/batch/lesson/listener/ServerRoomInfiltrationListener.java](batch-system/src/main/java/com/system/batch/lesson/listener/ServerRoomInfiltrationListener.java)
 - 리스너 등록
   - ```java
     @Bean
@@ -788,8 +788,8 @@ public interface ItemWriteListener<S> extends StepListener {
 
 ### 예시 코드
 
-- [JobExecutionListener 구현체](src/main/java/com/system/batch/lesson/listener/InfiltrationPlanListener.java)
-- [Job 설정 코드](src/main/java/com/system/batch/lesson/listener/AdvancedSystemInfiltrationConfig.java)
+- [JobExecutionListener 구현체](batch-system/src/main/java/com/system/batch/lesson/listener/InfiltrationPlanListener.java)
+- [Job 설정 코드](batch-system/src/main/java/com/system/batch/lesson/listener/AdvancedSystemInfiltrationConfig.java)
 
 ## JobParameter 가 아닌 ExecutionContext 를 사용하는 이유
 
@@ -840,7 +840,7 @@ ExecutionContextPromotionListener 를 사용해서, 보다 간결하게 스텝�
 - Step 수준 ExecutionContext 의 데이터를 Job 수준 ExecutionContext 로 **승격(Promote)** 시켜주는 리스너이다.
   - Spring Batch에서는 Step 수준의 ExecutionContext 데이터를 Job 수준의 ExecutionContext로 옮기는 과정을 승격(Promote)이라 부른다.
 - `ExecutionContextPromotionListener` 의 `setKeys()` 메서드를 사용하여, 승격시킬 키 목록을 지정할 수 있다.
-- [사용 예시코드](src/main/java/com/system/batch/lesson/listener/SystemTerminationConfig.java)
+- [사용 예시코드](batch-system/src/main/java/com/system/batch/lesson/listener/SystemTerminationConfig.java)
 
 ![img.png](img/img4.png)
 
@@ -858,7 +858,7 @@ Step 간 데이터 공유가 늘어날수록 복잡도가 증가한다.
 
 이를 통해 "실행 시점에 결정되는 값(잡 파라미터)"들을 리스너 내에서도 활용할 수 있다.
 
-- [예시 코드](src/main/java/com/system/batch/lesson/listener/SystemDestructionConfig.java)
+- [예시 코드](batch-system/src/main/java/com/system/batch/lesson/listener/SystemDestructionConfig.java)
 
 ## 리스너를 효과적으로 다루는 방법
 
@@ -933,7 +933,7 @@ ERR002  2024-01-19 10:15:25  FATAL     1235  MEMORY  OVERFLOW FAIL\n
 
 위와 같이 단순히 고정 길이 형식의 파일을 읽어야 하는 경우, `FlatFileItemReader.fixedLength()` 를 사용할 수 있다.
 
-[예시코드](src/main/java/com/system/batch/lesson/flatfileitemreader/FixedLengthSystemFailureJobConfig.java)
+[예시코드](batch-system/src/main/java/com/system/batch/lesson/flatfileitemreader/FixedLengthSystemFailureJobConfig.java)
 
 #### 정규식으로 파일 읽기
 
@@ -945,7 +945,7 @@ ERR002  2024-01-19 10:15:25  FATAL     1235  MEMORY  OVERFLOW FAIL\n
 
 위와 같이 정규식 패턴으로 파일을 읽어야 하는 경우, `RegexLineTokenizer` 를 사용할 수 있다.
 
-[예시코드](src/main/java/com/system/batch/lesson/flatfileitemreader/RegexSystemLogJobConfig.java)
+[예시코드](batch-system/src/main/java/com/system/batch/lesson/flatfileitemreader/RegexSystemLogJobConfig.java)
 
 
 
@@ -1046,7 +1046,7 @@ public T mapLine(String line, int lineNumber) throws Exception {
 
 #### 예시코드 1) 구분자로 토큰화해서 읽기
 
-[SystemFailureJobConfig](src/main/java/com/system/batch/lesson/flatfileitemreader/SystemFailureJobConfig.java)
+[SystemFailureJobConfig](batch-system/src/main/java/com/system/batch/lesson/flatfileitemreader/SystemFailureJobConfig.java)
 
 하기는 예시 파일
 
@@ -1058,7 +1058,7 @@ ERR002,2024-01-19 10:15:25,FATAL,1235,MEMORY_OVERFLOW
 
 #### 예시코드 2) 고정 길이로 토큰화해서 읽기
 
-[FixedLengthSystemFailureJobConfig](src/main/java/com/system/batch/lesson/flatfileitemreader/FixedLengthSystemFailureJobConfig.java)
+[FixedLengthSystemFailureJobConfig](batch-system/src/main/java/com/system/batch/lesson/flatfileitemreader/FixedLengthSystemFailureJobConfig.java)
 
 하기는 예시 파일
 
@@ -1071,7 +1071,7 @@ ERR002  2024-01-19 10:15:25  FATAL     1235  MEMORY  OVERFLOW FAIL\n
 
 #### 예시코드 3) 정규식으로 토큰화해서 읽기
 
-[RegexSystemLogJobConfig](src/main/java/com/system/batch/lesson/flatfileitemreader/RegexSystemLogJobConfig.java)
+[RegexSystemLogJobConfig](batch-system/src/main/java/com/system/batch/lesson/flatfileitemreader/RegexSystemLogJobConfig.java)
 
 하기는 예시 파일
 
@@ -1083,7 +1083,7 @@ ERR002  2024-01-19 10:15:25  FATAL     1235  MEMORY  OVERFLOW FAIL\n
 
 #### 예시코드 4) 조건에 따라 다른 Tokenizer 와 FieldSetMapper 사용하기
 
-[PatternMatchingSystemFailureJobConfig](src/main/java/com/system/batch/lesson/flatfileitemreader/PatternMatchingSystemFailureJobConfig.java)
+[PatternMatchingSystemFailureJobConfig](batch-system/src/main/java/com/system/batch/lesson/flatfileitemreader/PatternMatchingSystemFailureJobConfig.java)
 
 하기는 예시 파일
 
@@ -1107,7 +1107,7 @@ ABORT,zombie-process,Deadlock,2024-01-24T13:46:20,kill -9 executed,-1,/proc/dead
 
 - MultiResourceItemReader 를 사용해서, 파일 A, 파일 B, ...를 순차적으로 읽어가며 chunk 처리할 수 있다.
 
-[MultiResourceSystemFailureJobConfig](src/main/java/com/system/batch/lesson/flatfileitemreader/MultiResourceSystemFailureJobConfig.java)
+[MultiResourceSystemFailureJobConfig](batch-system/src/main/java/com/system/batch/lesson/flatfileitemreader/MultiResourceSystemFailureJobConfig.java)
 
 #### 번외) Record 클래스 객체로 FieldSetMapper 적용하기
 
@@ -1194,13 +1194,13 @@ public interface LineAggregator<T> {
 
 ### 예시코드
 
-- [DelimitedDeathNoteJobConfig](src/main/java/com/system/batch/lesson/flatfileitemwriter/DelimitedDeathNoteWriteJobConfig.java)
+- [DelimitedDeathNoteJobConfig](batch-system/src/main/java/com/system/batch/lesson/flatfileitemwriter/DelimitedDeathNoteWriteJobConfig.java)
 
 ### 2단계 - 커스텀 포맷 형식으로 문자열 합치기: `LineAggregator` -> `FormatterLineAggregator`
 
 `LineAggregator`의 또다른 구현체인 `FormatterLineAggregator` 를 사용해서, 원하는 포맷으로 파일에 쓸 수 있다.
 
-[FormatterDeathNoteJobConfig](src/main/java/com/system/batch/lesson/flatfileitemwriter/FormatterDeathNoteWriteJobConfig.java)
+[FormatterDeathNoteJobConfig](batch-system/src/main/java/com/system/batch/lesson/flatfileitemwriter/FormatterDeathNoteWriteJobConfig.java)
 
 ## FlatFileItemWriter 의 롤백 전략: 버퍼링을 통한 안전한 파일 쓰기
 
@@ -1224,15 +1224,15 @@ public interface LineAggregator<T> {
 
 ### 예시 코드
 
-[MultiResourceDeathNoteWriteJobConfig](src/main/java/com/system/batch/lesson/multiresourceitemwriter/MultiResourceDeathNoteWriteJobConfig.java)
+[MultiResourceDeathNoteWriteJobConfig](batch-system/src/main/java/com/system/batch/lesson/multiresourceitemwriter/MultiResourceDeathNoteWriteJobConfig.java)
 
 # FlatFileItemReader 와 FlatFileItemWriter 실전 예제
 
-[LogProcessingJobConfig](src/main/java/com/system/batch/lesson/flatfileitemwriter/LogProcessingJobConfig.java)
+[LogProcessingJobConfig](batch-system/src/main/java/com/system/batch/lesson/flatfileitemwriter/LogProcessingJobConfig.java)
 
 # JSON 파일 읽고 쓰기 예제
 
-[JsonFileSystemDeathJobConfig](src/main/java/com/system/batch/lesson/jsonfile/JsonFileSystemDeathJobConfig.java)
+[JsonFileSystemDeathJobConfig](batch-system/src/main/java/com/system/batch/lesson/jsonfile/JsonFileSystemDeathJobConfig.java)
 
 # 관계형 데이터베이스 읽고 쓰기
 
@@ -1283,7 +1283,7 @@ public interface LineAggregator<T> {
 
 #### `JdbcCursorItemReader` 예시 코드
 
-[JdbcCursorItemReaderJobConfig](src/main/java/com/system/batch/lesson/rdbms/CursorItemVictimRecordConfig.java)
+[JdbcCursorItemReaderJobConfig](batch-system/src/main/java/com/system/batch/lesson/rdbms/CursorItemVictimRecordConfig.java)
 
 #### JDBC 드라이버의 내부 최적화
 
@@ -1386,7 +1386,7 @@ public interface LineAggregator<T> {
 
 #### `JdbcPagingItemReader` 예시 코드
 
-[JdbcPagingItemReaderJobConfig](src/main/java/com/system/batch/lesson/rdbms/PagingItemVictimRecordConfig.java)
+[JdbcPagingItemReaderJobConfig](batch-system/src/main/java/com/system/batch/lesson/rdbms/PagingItemVictimRecordConfig.java)
 
 ## 관계형 DB 쓰기
 
@@ -1497,7 +1497,7 @@ url: jdbc:postgresql://localhost:5432/postgres?reWriteBatchedInserts=true
 
 ### JdbcPagingItemReader와 JdbcBatchItemWriter 예제 코드
 
-[ReaderAndWriterOrderRecoveryJobConfig](src/main/java/com/system/batch/lesson/rdbms/ReaderAndWriterOrderRecoveryJobConfig.java)
+[ReaderAndWriterOrderRecoveryJobConfig](batch-system/src/main/java/com/system/batch/lesson/rdbms/ReaderAndWriterOrderRecoveryJobConfig.java)
 
 ## JpaCursorItemReader
 
@@ -1529,7 +1529,7 @@ JdbcCursorItemReader 와의 주된 차이점은 내부적으로 entityManager를
 
 ### JpaCursorItemReader 예시 코드
 
-- [JpaCursorItemReaderPostBlockBatchConfig.java](src/main/java/com/system/batch/lesson/rdbms/JpaCursorItemReaderPostBlockBatchConfig.java)
+- [JpaCursorItemReaderPostBlockBatchConfig.java](batch-system/src/main/java/com/system/batch/lesson/rdbms/JpaCursorItemReaderPostBlockBatchConfig.java)
 
 ## JpaPagingItemReader
 
@@ -1568,7 +1568,7 @@ https://github.com/jojoldu/spring-batch-querydsl
 
 ### JpaPagingItemReader 예시 코드
 
-[JpaPagingItemReaderPostBlockBatchConfig.java](src/main/java/com/system/batch/lesson/rdbms/JpaPagingItemReaderPostBlockBatchConfig.java)
+[JpaPagingItemReaderPostBlockBatchConfig.java](batch-system/src/main/java/com/system/batch/lesson/rdbms/JpaPagingItemReaderPostBlockBatchConfig.java)
 
 ## JpaItemWriter
 
@@ -1604,8 +1604,8 @@ public JpaTransactionManager transactionManager(EntityManagerFactory emf) {
 
 ### 예제 코드
 
-- 새로운 데이터 INSERT : [JpaItemWriterPostBlockBatchConfig.java](src/main/java/com/system/batch/lesson/rdbms/JpaItemWriterPostBlockBatchConfig.java)
-- 기존 데이터 UPDATE : [JpaItemWriterMergePostBlockBatchConfig.java](src/main/java/com/system/batch/lesson/rdbms/JpaItemWriterMergePostBlockBatchConfig.java)
+- 새로운 데이터 INSERT : [JpaItemWriterPostBlockBatchConfig.java](batch-system/src/main/java/com/system/batch/lesson/rdbms/JpaItemWriterPostBlockBatchConfig.java)
+- 기존 데이터 UPDATE : [JpaItemWriterMergePostBlockBatchConfig.java](batch-system/src/main/java/com/system/batch/lesson/rdbms/JpaItemWriterMergePostBlockBatchConfig.java)
 
 # 위임 ItemWriter 와 ItemReader
 
@@ -1707,7 +1707,7 @@ private Classifier<T, ItemWriter<? super T>> classifier = new ClassifierSupport<
 
 ### ClassifierCompositeItemWriter 예시코드
 
-[MandateSystemLogProcessingConfig](src/main/java/com/system/batch/lesson/mandate/MandateSystemLogProcessingConfig.java)
+[MandateSystemLogProcessingConfig](batch-system/src/main/java/com/system/batch/lesson/mandate/MandateSystemLogProcessingConfig.java)
 
 # ItemStream
 
@@ -2509,7 +2509,7 @@ ItemProcessor와 ItemWriter 는 서로 동일한 RetryTemplate을 사용하지�
 
 하기 예제 코드를 보고 그 차이점을 알아보자.
 
-[TerminationRetryForItemProcessorConfig.java](src/main/java/com/system/batch/lesson/retry/TerminationRetryForItemProcessorConfig.java) 에서도 하기 코드를 확인 가능하니 참고하자.
+[TerminationRetryForItemProcessorConfig.java](batch-system/src/main/java/com/system/batch/lesson/retry/TerminationRetryForItemProcessorConfig.java) 에서도 하기 코드를 확인 가능하니 참고하자.
 ```java
 /**
  * ItemProcessor와 ItemWriter의 재시도 동작 방식의 차이점을 비교하기 위한 예시 코드
@@ -4536,3 +4536,15 @@ public Job brutalizedSystemJob() {
 ```
 
 이제 Job이 종료될 때마다 BrutalizedSystemExitCodeGenerator 가 호출되어, 최종 ExitStatus를 기반으로 시스템 종료 코드를 설정하게 된다.
+
+# REST API 를 통한 Job 실행과 JopOperator
+
+Spring Batch는 REST API를 통해 배치 작업을 실행하고 관리할 수 있는 기능을 제공한다. 
+
+JobLauncher와 JobOperator를 활용해 단순히 Job을 실행하는 것뿐만 아니라, 실행 중인 Job을 중지하고 필요에 따라 재시작할 수도 있다.
+
+
+
+
+
+
