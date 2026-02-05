@@ -4703,5 +4703,126 @@ public class BatchCustomConfiguration {
 
 ### 6. API 실행
 
+이제 API를 실행해보면, 정상적으로 동작하는 것을 알 수 있다.
 
+## JobOperator: 배치 작업의 완전한 제어
+
+위에서 API로 잡을 실행하는 방법에 대해 알아봤다. 
+
+물론 작동은 하지만, 솔직히 이 정도로는 시스템을 완벽하게 장악했다고 말하기 어렵다. 단순히 Job을 시작하는 것 외에도, 실제 운영 환경에서는 실행 중인 Job을 중지하거나, 실패한 Job을 재시작하거나, 실행 상태를 모니터링하는 등 더 정교한 제어가 필요하다.
+
+이를 간편하게 할 수 있도록 Spring Batch는 `JobOperator` 라는 컴포넌트를 제공한다.
+
+### JobOperator란?
+
+JobOperator 는 Job의 '운영'에 초점을 맞춘 인터페이스로, JobLauncher보다 한 단계 높은 수준의 추상화를 제공한다.
+
+Job의 시작, 중지, 재시작 등 배치 작업의 전체 생명주기를 관리할 수 있으며, 다양한 Job과 Step의 운영 관련 정보를 제공한다.
+
+```java
+public interface JobOperator {
+    List<Long> getExecutions(long instanceId);
+    List<Long> getJobInstances(String jobName, int start, int count);
+    JobInstance getJobInstance(String jobName, JobParameters jobParameters);
+    Set<Long> getRunningExecutions(String jobName);
+    String getParameters(long executionId);
+    Long start(String jobName, Properties parameters);
+    Long restart(long executionId);
+    Long startNextInstance(String jobName);
+    boolean stop(long executionId);
+    String getSummary(long executionId);
+    Map<Long, String> getStepExecutionSummaries(long executionId);
+    Set<String> getJobNames();
+    JobExecution abandon(long jobExecutionId);
+}
+```
+
+이 JobOperator를 사용하면, 배치 작업의 실행 상태를 모니터링하고, 실패한 작업을 재시작하거나, 중간에 작업을 중지할 수 있다. 또한, Job과 Step의 실행 정보를 조회할 수 있어, 배치 작업의 운영을 더욱 효율적으로 관리할 수 있다.
+
+### JobOperator 사용 예시
+
+이제 컨트롤러에서 JobOperator를 사용하도록 수정한다.
+
+```java
+@RestController
+@RequestMapping("v2/api/jobs")
+@RequiredArgsConstructor
+public class JobOperatorController {
+    private final JobOperator jobOperator;
+    private final JobExplorer jobExplorer;
+
+    /**
+     * Job 실행
+     */
+    @PostMapping("/{jobName}/start")
+    public ResponseEntity<String> launchJob(
+        @PathVariable String jobName
+    ) throws Exception {
+        //매번 다른 JobParameters 로 실행하기 위해 타임스탬프를 넣어준다.
+        Properties jobParameters = new Properties();
+        jobParameters.setProperty("run.timestamp", String.valueOf(System.currentTimeMillis()));
+
+        Long executionId = jobOperator.start(jobName, jobParameters);
+        return ResponseEntity.ok("Job launched with ID: " + executionId);
+    }
+
+    /**
+     * Job 실행 이력 조회
+     * 특정 Job의 최근 실행 이력을 조회한다.
+     * 이를 통해 Job의 실행 상태를 모니터링할 수도 있다.
+     */
+    @GetMapping("/{jobName}/executions")
+    public ResponseEntity<List<String>> getJobExecutions(@PathVariable String jobName) {
+        List<JobInstance> jobInstances = jobExplorer.getJobInstances(jobName, 0, 10);
+        List<String> executionInfo = new ArrayList<>();
+
+        for (JobInstance jobInstance : jobInstances) {
+            List<JobExecution> executions = jobExplorer.getJobExecutions(jobInstance);
+            for (JobExecution execution : executions) {
+                executionInfo.add(String.format("Execution ID: %d, Status: %s",
+                    execution.getId(), execution.getStatus()));
+            }
+        }
+
+        return ResponseEntity.ok(executionInfo);
+    }
+
+    /**
+     * Job 실행 중지
+     * 반환값으로 중지 요청이 성공적으로 전달되었는지만 나타낸다.
+     */
+    @PostMapping("/stop/{executionId}")
+    public ResponseEntity<String> stopJob(@PathVariable Long executionId) throws Exception {
+        boolean stopped = jobOperator.stop(executionId);
+        return ResponseEntity.ok("Stop request for job execution " + executionId +
+            (stopped ? " successful" : " failed"));
+    }
+
+    /**
+     * 중지되거나 실패한 Job을 재시작한다.
+     */
+    @PostMapping("/restart/{executionId}")
+    public ResponseEntity<String> restartJob(@PathVariable Long executionId) throws Exception {
+        Long newExecutionId = jobOperator.restart(executionId);
+        return ResponseEntity.ok("Job restarted with new execution ID: " + newExecutionId);
+    }
+}
+```
+
+- `/{jobName}/start` (Job 시작):
+  - JobOperator의 start() 메서드를 호출해 지정된 이름의 Job을 실행한다.
+  - JobOperator는 JobLauncherApplicationRunner와 달리 자동으로 `JobParametersIncrementer` 처리를 하지 않는다.
+  - 따라서 매번 다른 JobParameters로 실행하기 위해 `run.timestamp` 파라미터를 추가한다.
+  - 이 방식으로 JobInstanceAlreadyExistsException 예외를 방지할 수 있다.
+- `/{jobName}/executions` (Job 실행 이력 조회):
+  - JobExplorer를 사용해 jobName으로 지정한 Job의 최근 실행 이력을 조회한다.
+  - 각 JobInstance와 관련된 JobExecution 정보를 반환하여 Job의 실행 상태를 모니터링할 수 있다.  
+- `/stop/{executionId}` (Job 중지):
+  - JobOperator의 stop() 메서드를 호출해 실행 중인 Job을 중지한다. 
+  - 이 API는 중지 요청만 전달하며, 실제 Job이 중지되는 데는 다소 시간이 걸릴 수 있다.
+  - 반환값은 중지 요청이 성공적으로 전달되었는지만 나타낸다.
+- `/restart/{executionId}` (Job 재시작):
+  - JobOperator의 restart() 메서드를 사용해 중지되거나 실패한 Job을 재시작한다.
+  - 재시작된 Job은 이전 실행의 ExecutionContext를 통해 중단된 지점부터 계속 실행된다.
+  - 메서드는 새로 생성된 JobExecution의 ID를 반환한다.
 
