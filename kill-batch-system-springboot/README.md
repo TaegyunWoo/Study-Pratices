@@ -4819,10 +4819,330 @@ public class JobOperatorController {
   - 각 JobInstance와 관련된 JobExecution 정보를 반환하여 Job의 실행 상태를 모니터링할 수 있다.  
 - `/stop/{executionId}` (Job 중지):
   - JobOperator의 stop() 메서드를 호출해 실행 중인 Job을 중지한다. 
-  - 이 API는 중지 요청만 전달하며, 실제 Job이 중지되는 데는 다소 시간이 걸릴 수 있다.
+  - 이 API는 중지 요청만 전달하며, 실제 Job이 중지되는 데는 다소 시간이 걸릴 수 있다. 현재 실행 중인 청크(스텝)에 대한 작업이 완료된 후에 안전하게 중단된다.
   - 반환값은 중지 요청이 성공적으로 전달되었는지만 나타낸다.
+  - 메타데이터 저장소의 `batch_job_execution` 테이블의 `status` 를 `STOPPING` 으로 변경한다.
+  - 자세한 것은 아래에서 다룬다.
 - `/restart/{executionId}` (Job 재시작):
   - JobOperator의 restart() 메서드를 사용해 중지되거나 실패한 Job을 재시작한다.
   - 재시작된 Job은 이전 실행의 ExecutionContext를 통해 중단된 지점부터 계속 실행된다.
   - 메서드는 새로 생성된 JobExecution의 ID를 반환한다.
 
+#### 잡 중단 메커니즘
+
+잡 중단 요청시, 내부 프로세스는 아래와 같다.
+
+1. 중지 요청 단계
+   - `JobOperator.stop()` 호출시, JobExecution의 상태가 `STOPPING` 으로 설정된다.
+   - 이 상태는 메타데이터 저장소에 기록되지만, 실제 작업은 아직 중단되지 않는다.
+2. 중지 감지 단계
+   - 청크 처리 완료 후, `JobRepository.update(stepExecution)` 을 호출한다.
+   - `checkForInterruption()` 메서드에서, 메타데이터 저장소로부터 JobExecution의 현재 상태를 동기화한다.
+   - JobExecution이 `STOPPING` 상태면 StepExecution의 `terminateOnly` 플래그를 true로 설정한다.
+3. 중지 실행 단계
+   - StepExecution의 `terminateOnly` 필드가 true인 경우 JobInterruptedException 를 던진다.
+   - AbstractStep에서 예외를 포착하여 StepExecution 상태를 `STOPPED`로 변경한다. (스텝의 상태를 변경)
+   - SimpleStepHandler에서 StepExecution의 `STOPPED` 상태를 감지하고 JobInterruptedException 를 던진다.
+   - 최종적으로 AbstractJob에서 JobExecution 상태를 `STOPPED`로 변경한다. (잡의 상태를 변경)
+
+![img.png](img/img49.png)
+
+# Batch Flow
+
+Spring Batch 는 복잡한 흐름 제어 요구사항을 해결하기 위해 Flow라는 메커니즘을 제공한다.
+
+Flow 를 사용하면 순차적으로 Step을 실행하는 것을 넘어, 상황에 맞게 유연하게 경로를 결정하는 것이 가능하다.
+
+## Batch Flow란?
+
+Flow는 Job 안에서 각 Step들이 언제, 어떤 조건으로 실행될지 우리가 직접 설계하고 지휘하는 핵심 메커니즘이다. 이를 통해 복잡한 흐름 제어를 구현할 수 있다.
+
+특정 Step의 실행 결과(`ExitStatus`)와 우리가 설정한 조건에 따라 다음에 어떤 Step으로 나아갈지를 결정할 수 있다.
+
+### Flow 3대 핵심 요소
+
+#### 1) 상태(State)
+
+상태(State)란 Flow 내에서 현재 실행이 머무르거나 도달할 수 있는 모든 논리적 지점을 의미한다.
+
+상태는 크게 실행상태와 종료상태 두가지 유형으로 분류된다.
+
+- 실행 상태 (StepState 등): _(Spring Batch 에서 사용되는 용어는 아니다.)_
+  - 실행 상태는 Flow 내에서 실제 특정 작업(로직)을 수행하는 지점을 나타낸다.
+- 종료 상태 (EndState):
+  - 종료 상태는 Flow 실행의 최종 도착점을 나타내는 상태이다.
+  - Flow가 이 상태에 도달하면 더 이상 진행되지 않고 실행이 종료된다.
+  - Job의 최종 결과는 Flow가 어떤 EndState로 끝났는지에 따라 결정된다.
+
+#### 2) 전이 조건 (ExitCode)
+
+어떤 스텝을 실행할 것인지에 대한 분기 기준이다. Flow에선 ExitStatus가 다음 전이를 결정하는 핵심 조건이다.
+
+기본으로 제공되는 "COMPLETED", "FAILED" 외에도 커스텀 ExitStatus를 정의해 세밀한 분기가 가능하다.
+
+#### 3) 전이 규칙 (Transition)
+
+ExitCode 조건에 따라 다음 상태로의 이동을 정의한다.
+
+ExitCode는 Step의 실행 결과를 기반으로 결정되며, Transition은 ExitCode에 따라 Flow의 진행 방향을 결정한다
+
+### Flow 구현 기본 예시
+
+1. analyzeContentStep 실행
+2. 만약 analyzeContentStep 의 ExitCode 가 `COMPLETED` 라면 publishLectureStep 실행
+3. 만약 analyzeContentStep 의 ExitCode 가 `FAILED` 라면 summarizeFailureStep 실행
+
+위와 같이 동작하는 Flow를 만드는 예시는 아래와 같다.
+
+```java
+@Bean
+public Job lectureScanConditionalJob(
+    JobRepository jobRepository,
+    Step analyzeContentStep,      // State 1
+    Step publishLectureStep,      // State 2
+    Step summarizeFailureStep     // State 3
+) {
+
+  return new JobBuilder("lectureScanConditionalJob", jobRepository)
+      // 초기 State 설정
+      .start(analyzeContentStep) 
+      
+      
+      // [Transition 1] 
+      // IF ExitStatus == "COMPLETED" THEN publishLectureStep State
+      .on("COMPLETED")           // 조건: ExitCode가 "COMPLETED"
+      .to(publishLectureStep)    // 전이: publishLectureStep으로 이동
+      
+      // 다시 analyzeContentStep으로부터 새로운 Transition 정의
+      .from(analyzeContentStep)  
+      
+      // [Transition 2]
+      // IF ExitStatus == "FAILED" THEN 다음 summarizeFailureStep State
+      .on("FAILED")              // 조건: ExitCode가 "FAILED"
+      .to(summarizeFailureStep)  // 전이: summarizeFailureStep으로 이동
+      
+      // 모든 Flow 정의 종료
+      .end()
+      .build();
+}
+```
+
+- `start()` : 시작 상태를 설정.
+- `on()` : 조건을 지정한 다음.
+- `to()` : 전이될 다음 상태를 정의.
+- `from()` : 추가 분기가 필요할 경우 기준점을 다시 설정.
+- `end()` : 모든 Flow 정의가 완료되었음을 시스템에 알림.
+
+## 커스텀 ExitCode를 활용한 Flow 분기 제어
+
+### 청크 지향 처리에서의 커스텀 ExitCode 설정
+
+커스텀 ExitCode를 기반으로 Flow를 구성하기 위해서는 먼저 커스텀 ExitStatus를 생성하고 이를 StepExecution에 설정하는 방법을 알아야 한다.
+
+가장 대표적인 방법은 StepExecutionListener 의 `afterStep()` 메서드를 구현하는 것이다.
+
+```java
+@Component
+public class DataDeathCountListener implements StepExecutionListener {
+    private static final int CRITICAL_SKIP_THRESHOLD = 10;
+    private static final int WARNING_SKIP_THRESHOLD = 5;
+
+    @Override
+    public void beforeStep(StepExecution stepExecution) {
+        // 필요 시 초기화 작업
+    }
+
+    @Override
+    public ExitStatus afterStep(StepExecution stepExecution) {
+        int skipCount = stepExecution.getSkipCount();
+        
+        if (skipCount >= CRITICAL_SKIP_THRESHOLD) {
+            return new ExitStatus("DATA_MASSACRE", // 커스텀 ExitCode
+                    String.format("데이터 대량 학살 발생! %d개 항목이 처형되었다!", skipCount));
+        } else if (skipCount >= WARNING_SKIP_THRESHOLD) {
+            return new ExitStatus("DATA_TORTURE", // 커스텀 ExitCode
+                    String.format("데이터 고문이 진행 중! %d개 항목이 고통받고 있다!", skipCount));
+        } else if (skipCount > 0) {
+            return new ExitStatus("DATA_SLAP", // 커스텀 ExitCode
+                    String.format("데이터 가벼운 체벌! %d개 항목이 훈육되었다.", skipCount));
+        }
+        
+        // 기존 ExitStatus 유지
+        return stepExecution.getExitStatus();
+    }
+}
+```
+
+### 커스텀 ExitCode 활용 예시
+
+커스텀 ExitCode를 활용하여 Flow 분기 제어를 구현하는 예시를 살펴보자.
+
+1. analyzeLectureStep 으로 시작
+2. 만약 analyzeLectureStep 의 ExitStatus 가 `APPROVED` 이면 approveImmediatelyStep 으로 이동
+3. 만약 analyzeLectureStep 의 ExitStatus 가 `PLAGIARISM_DETECTED` 이면 initiateContainmentProtocolStep 으로 이동
+4. 만약 analyzeLectureStep 의 ExitStatus 가 `TOO_EXPENSIVE` 이면 priceGougerPunishmentStep 으로 이동
+5. 만약 analyzeLectureStep 의 ExitStatus 가 `666_UNKNOWN_PANIC` 이면 adminManualCheckStep 으로 이동
+6. 만약 analyzeLectureStep 의 ExitStatus 가 `QUALITY_SUBSTANDARD` 이면 lowQualityRejectionStep 으로 이동
+
+```java
+@Bean
+public Job lectureReviewJob(
+    JobRepository jobRepository,
+    Step analyzeLectureStep,
+    Step approveImmediatelyStep,
+    Step initiateContainmentProtocolStep,
+    Step lowQualityRejectionStep,
+    Step priceGougerPunishmentStep,
+    Step adminManualCheckStep
+) {
+    return new JobBuilder("inflearnLectureReviewJob", jobRepository)
+            .start(analyzeLectureStep) // 모든 것은 강의 분석에서 시작된다...
+            .on("APPROVED").to(approveImmediatelyStep)     //  합격. 즉시 승인 및 게시. 축배를 들어라!
+
+            .from(analyzeLectureStep) // 다시 분석 스텝으로 돌아와서...
+            .on("PLAGIARISM_DETECTED").to(initiateContainmentProtocolStep)  //  표절 의심? 즉시 격리 및 저작권 위반 심문 시작 💀
+            
+            .from(analyzeLectureStep) //  또 다시 분석 스텝...
+            .on("TOO_EXPENSIVE").to(priceGougerPunishmentStep)      // 수강생 등골 브레이커 탐지! '바가지 요금 처단' 스텝으로 보내 경제 정의 실현!
+            
+            .from(analyzeLectureStep) //  또 다시...
+            .on("666_UNKNOWN_PANIC").to(adminManualCheckStep)     // 💀💀💀💀 컨텐츠 담당자 공포에 떨며 검토 중 💀💀💀💀
+
+            .from(analyzeLectureStep) //  마지막이다...
+            .on("QUALITY_SUBSTANDARD").to(lowQualityRejectionStep)   // 품질 미달? 기준 이하는 용납 못한다!
+
+            .end() // Flow 종료
+            .build();
+}
+```
+
+### 암시적 전이 규칙
+
+Flow DSL 상에서 다른 상태로의 전이 규칙을 단 하나도 정의하지 않은 경우, Spring Batch가 자동으로 처리해준다.
+
+`.on() → .to()` 체인이 전혀 없는 상태들이 이에 해당한다.
+
+만약 `.on() → .to()` 체인이 적용된 스텝이 있다면, 반드시 모든 ExitCode에 대해 경로를 명시적으로 정의해야 한다.
+
+### 패턴 매칭 ExitCode
+
+ExitCode가 특정 패턴에 부합하는 경우, 해당 패턴에 맞는 스텝으로 전이될 수 있다. 예를 들어, `*ERROR*` 패턴은 모든 에러 ExitCode를 처리할 수 있다.
+
+#### 1) `*`
+
+`*`는 어떤 문자열(빈 문자열 포함)과도 매칭된다. 즉, "어떤 값이든 상관없다" 라는 의미다.
+
+```java
+.on("*")   // 모든 ExitCode와 매치 (제약 없이 모두 처리)
+```
+
+1. 모든 나머지 경우 한 번에 처리하기
+
+```java
+.from(analyzeLectureStep)
+.on("*") // 앞서 지정하지 않은 모든 ExitCode는 전부 여기서 매칭
+.to(processUnknownStateStep)
+```
+
+2. 특정 패턴으로 시작하거나 끝나는 ExitCode 모두 처리하기
+
+```java
+// 강의 등록 오류 관련 ExitCode
+// ERROR_FILE_MISSING
+// ERROR_PROCESSING_FAILED
+// ERROR_DATABASE_CONNECTION
+// ... 기타 등등
+
+.from(analyzeLectureStep)
+.on("ERROR_*") // 모든 강의 등록 오류는 별도의 스텝에서 에러 핸들링!
+.to(systemErrorHandlingStep)
+```
+
+#### 2) `?`
+
+`?`는 정확히 한 개의 문자와 매칭되는 와일드카드다. 즉, "이 위치에 어떤 한 글자가 온다" 라는 의미다.
+
+1. 숫자나 단일 문자 변형이 있는 ExitCode 그룹화하기
+
+```java
+.on("ERROR_?") // 'ERROR_' 다음에 딱 한 글자만 오는 패턴과 매치 (ERROR_1, ERROR_2 등)
+```
+
+2. 코드 길이가 정확히 정해진 패턴 매칭하기
+
+```java
+.on("QUALITY_???") // QUALITY_ 다음에 정확히 3글자가 오는 패턴과 매치 (QUALITY_LOW, QUALITY_BAD 등)
+```
+
+3. `*` 조합
+
+```java
+.on("LECTURE_??_*") // 'LECTURE_'로 시작하고 그 뒤에 정확히 2글자가 오고, 그 뒤엔 어떤 문자열이든 올 수 있음 (LECTURE_01_BASIC, LECTURE_02_ADVANCED 등)
+```
+
+
+#### 매칭되는 여러 조건이 있는 경우, 전이 우선순위
+
+만약 어떤 ExitCode가 여러 `on()` 과 매칭된다면, 아래와 같은 우선순위로 처리된다.
+
+1. 정확한 문자열
+2. `?` 가 포함된 패턴
+3. `???` 처럼 물음표로만 구성된 패턴
+4. `*` 가 포함된 패턴
+5. `*` 로만 구성된 패턴
+
+이에 대한 예시는 아래와 같다.
+
+```text
+ERROR_1 > ERROR_? > ??? > ERROR_* > *
+```
+
+## EndState 설정
+
+위에서 가장 마지막에 실행된 Step의 ExitCode 에 의해 Job의 최종 EndState가 결정된다고 설명했다.
+
+이번에는 어떤 Step ExitCode를 어떤 EndState로 매핑할 것인지 설정하는 방법에 대해 알아본다.
+
+### `end()` : COMPLETED 상태로 전이
+
+```java
+.from(analyzeLectureStep)
+.on("TOO_EXPENSIVE").to(priceGougerPunishmentStep).on("*").end()  // 바가지 요금 탐지 후 처리 결과와 무관하게 성공 종료
+
+.from(analyzeLectureStep)
+.on("QUALITY_SUBSTANDARD").to(lowQualityRejectionStep).on("*").end()  // 품질 미달 처리 후 결과와 무관하게 성공 종료
+```
+
+위와 같이, `on() -> end()` 체이닝으로 처리할 수 있다. 이때 `*` 패턴으로 매칭하여 모든 ExitCode 에 대해 성공처리하는 것을 알 수 있다.
+
+> 여기서의 `end()` 는 Flow DSL에서 전이 정의가 끝날때 사용하는 `end()` 와 다름에 유의하자.
+
+### `stop()` : STOPPED 상태로 전이
+
+```java
+.from(analyzeLectureStep)
+.on("666_UNKNOWN_PANIC").to(adminManualCheckStep).on("*").stop()  // 관리자 검토 후 결과와 무관하게 중단 상태로 종료
+```
+
+### `fail()` : FAILED 상태로 전이
+
+```java
+.from(analyzeLectureStep)
+.on("PLAGIARISM_DETECTED").fail()  // 표절 감지 즉시 실패 처리, 추가 단계 없음
+```
+
+### `end(status)` : 커스텀 EndState로 전이
+
+```java
+.on("APPROVED").to(approveImmediatelyStep).on("*").end("COMPLETED_BY_SYSTEM")
+```
+
+이 오버로딩된 end()메서드를 사용하면 Flow를 우리가 지정한 커스텀 EndState로 전이시킬 수 있다. Flow의 종료 상태를 더욱 풍부하게 표현하고자 할 때 유용하다.
+
+**단 주의해야 하는 점이 있는데, 커스텀 EndState 는 반드시 `COMPLETED` , `FAILED` , `STOPPED` 중 하나로 시작해야한다는 것이다.**
+
+BatchStatus는 Spring Batch의 시스템 동작과 직결되어 있어 미리 정의된 값만 사용할 수 있다. 따라서 커스텀 EndState는 `COMPLETED` , `FAILED` , `STOPPED` 중 하나로 시작해야 한다.
+
+이를 통해 커스텀 EndState가 기존 EndState와 어떻게 매핑되는지 설정해야 한다.
+
+## JobExecutionDecider
