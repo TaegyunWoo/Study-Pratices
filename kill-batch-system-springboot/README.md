@@ -5146,3 +5146,166 @@ BatchStatus는 Spring Batch의 시스템 동작과 직결되어 있어 미리 �
 이를 통해 커스텀 EndState가 기존 EndState와 어떻게 매핑되는지 설정해야 한다.
 
 ## JobExecutionDecider
+
+위 방식은 복잡한 분기처리시, 아래와 같은 문제가 있을 수 있다.
+
+- Step의 본질적 기능 오염
+  - Step 내부에 ExitCode 결정 로직이 증가하면서 진짜 핵심 비즈니스 로직은 뒤로 밀려나게 된다.
+- 분기 로직의 은폐(청크지향처리)
+  - 청크 지향 처리에서는 ExitCode 설정을 위해 StepExecutionListener를 별도로 구현해야 한다. 이렇게 되면 흐름 제어 로직이 리스너에 숨어 전체 흐름을 이해하기 어려워진다.
+
+이 문제를 JobExecutionDecider 로 해결할 수 있다. JobExecutionDecider를 사용하면 전이 조건 설정 로직을 Step 코드 외부로 뺄 수 있다.
+
+JobExecutionDecider는 **전이 조건(FlowExecutionStatus)을 결정하는 전용 컴포넌트**이다. 이를 사용하면 아래와 같은 이점을 얻을 수 있다.
+
+- 관심사의 분리: Step은 데이터 처리라는 본연의 임무에만 집중할 수 있다. 흐름 제어 관련 로직은 완전히 분리된 컴포넌트에서 처리된다.
+- 더 명확한 Flow 정의: Flow 구성에서 의사결정 포인트가 명시적으로 드러나 전체 흐름을 파악하기 쉬워진다.
+
+### JobExecutionDecider 사용 예시
+
+```java
+/**
+ * 전이 조건을 구현하는 커스텀 JobExecutionDecider 클래스
+ */
+@Component
+public static class StudentReviewDecider implements JobExecutionDecider {
+
+    @Override
+    public FlowExecutionStatus decide(JobExecution jobExecution, StepExecution stepExecution) {
+        // StepExecution의 ExecutionContext에서 분석 결과 추출
+        ExecutionContext executionContext = stepExecution.getExecutionContext();
+        int reviewScore = executionContext.getInt("reviewScore");
+
+        log.info("수강생 리뷰 점수 기반 강의 분류 중", reviewScore);
+
+        // 리뷰 점수에 따른 강의 분류
+        if (reviewScore > 10) {
+            log.error("스프링 배치 마스터 감지!!!");
+            return new FlowExecutionStatus("666_SPRING_BATCH");
+        } else if (reviewScore >= 8) {
+            log.info("우수 강의 감지! 홍보 대상으로 분류");
+            return new FlowExecutionStatus("EXCELLENT_COURSE");
+        } else if (reviewScore >= 5) {
+            log.info("평균 강의 감지. 일반 관리 대상으로 분류");
+            return new FlowExecutionStatus("AVERAGE_COURSE");
+        } else {
+            log.warn("저평가 강의 감지! 개선 필요 대상으로 분류");
+            return new FlowExecutionStatus("NEEDS_IMPROVEMENT");
+        }
+    }
+}
+
+/**
+ * Job 정의
+ */
+@Bean
+public Job studentReviewJob(
+    JobRepository jobRepository,
+    Step analyzeStudentReviewStep,
+    StudentReviewDecider studentReviewDecider,
+    Step promoteCourseStep,
+    Step normalManagementStep,
+    Step improvementRequiredStep,
+    Step springBatchMasterStep
+) {
+    return new JobBuilder("studentReviewJob", jobRepository)
+        .start(analyzeStudentReviewStep) //시작할 스텝
+        .next(studentReviewDecider) //analyzeStudentReviewStep 에서 StepExecution 에 넣어준 값을 기준으로 FlowExecutionStatus를 반환하기에, studentReviewDecider는 analyzeStudentReviewStep 이후에 와야한다.
+        .on("EXCELLENT_COURSE").to(promoteCourseStep) //studentReviewDecider 에서 반환한 FlowExecutionStatus(ExitCode) 에 대한 라우팅
+        .from(studentReviewDecider).on("AVERAGE_COURSE").to(normalManagementStep)
+        .from(studentReviewDecider).on("NEEDS_IMPROVEMENT").to(improvementRequiredStep)
+        .from(studentReviewDecider).on("666_SPRING_BATCH").to(springBatchMasterStep)
+        .end()
+        .build();
+}
+```
+
+## Flow를 독립적인 Bean 객체로 만들기
+
+만약 여러 Job에서 동일한 Flow를 사용하는 경우, JobBuilder에 동일한 FlowDSL 체이닝을 해야 한다.
+
+이 Flow를 하나의 독립적인 객체로 만들어, 코드 재사용을 할 수 있는 방법에 대해 알아본다.
+
+### 예시코드) Flow 를 Bean 객체로 만들기
+
+```java
+/**
+ * FlowBuilder 를 통한 Flow Bean 객체 등록
+ */
+@Bean
+public Flow lectureValidationFlow(
+    Step validateContentStep, 
+    Step checkPlagiarismStep, 
+    Step verifyPricingStep
+) {
+    return new FlowBuilder<Flow>("lectureValidationFlow")
+            .start(validateContentStep)
+            .next(checkPlagiarismStep)
+            .on("PLAGIARISM_DETECTED").fail()  // 표절 감지되면 즉시 실패 처리
+            .from(checkPlagiarismStep)
+            .on("COMPLETED").to(verifyPricingStep)
+            .on("TOO_EXPENSIVE").to(pricingWarningStep)  // 가격이 과도하면 경고 처리
+            .from(verifyPricingStep)
+            .on("*").end()  // 나머지 모든 경우는 정상 종료
+            .build();
+}
+```
+
+### 예시코드) Flow 재사용방법 1 - Job에 Flow 주입
+
+```java
+@Bean
+public Job newCourseReviewJob(
+    JobRepository jobRepository, 
+    Flow lectureValidationFlow,
+    Step notifyInstructorStep
+) {
+    return new JobBuilder("newCourseReviewJob", jobRepository)
+            .start(lectureValidationFlow)  // Flow를 Job의 시작점으로 사용
+            .next(notifyInstructorStep)    // Flow 완료 후 추가 Step 실행
+            .end()
+            .build();
+}
+```
+
+### 예시코드) Flow 재사용방법 2 - Flow를 하나의 Step으로 사용
+
+```java
+@Bean
+public Job newCourseReviewJob(
+    JobRepository jobRepository,
+    Step validationStep,
+    Step notifyInstructorStep
+) {
+    return new JobBuilder("newCourseReviewJob", jobRepository)
+            .start(validationStep)  // Step으로 위장한 Flow를 Job의 시작점으로 사용
+            .next(notifyInstructorStep)    // Flow 완료 후 추가 Step 실행
+            .end()
+            .build();
+}
+
+/**
+ * Flow를 Step으로 위장
+ */
+@Bean
+public Step validationStep(
+    JobRepository jobRepository,
+    PlatformTransactionManager transactionManager,
+    Flow lectureValidationFlow
+) {
+    return new StepBuilder("validationStep", jobRepository)
+        .flow(lectureValidationFlow)  // Step 내에 Flow 주입
+        .build();
+}
+```
+
+StepBuilder의 flow() 메서드를 사용하면 내부적으로 FlowStep이 생성되어, Flow 전체를 마치 하나의 Step인 것처럼 취급할 수 있다.
+
+**Flow 전체에 대해 Step 단위의 리스너를 붙이거나 ItemStream을 적용하고자 할 때 유용하게 사용할 수 있다.**
+
+## Flow 사용시 주의점
+
+하나의 Job에 온갖 Step과 분기 로직을 넣으면, 유지보수와 가독성이 크게 떨어질 수 있다.
+
+따라서 정말 Flow가 필요한 경우에만 사용하고, 단일 책임을 가진 작은 Job들이 모여 전체 시스템을 이루는 것을 고려하자.
+
