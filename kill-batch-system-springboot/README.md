@@ -5309,3 +5309,157 @@ StepBuilder의 flow() 메서드를 사용하면 내부적으로 FlowStep이 생�
 
 따라서 정말 Flow가 필요한 경우에만 사용하고, 단일 책임을 가진 작은 Job들이 모여 전체 시스템을 이루는 것을 고려하자.
 
+# 멀티스레드 스텝
+
+## 개요
+
+멀티스레드 스텝은 하나의 StepExecution을 여러 스레드로 동시에 실행하는 기법이다.
+
+단일 스레드의 한계를 뛰어넘어 시스템 자원을 최대한 활용해 처리 속도를 극대화하는 전략이다.
+
+### 멀티스레드 스텝 동작 프로세스
+
+- 테스크릿 지향 처리 스텝: 
+  - Tasklet의 execute() 메서드를 여러 스레드가 동시에 병렬로 실행한다.
+- 청크 지향 처리 스텝: 
+  - 각 청크 처리(ItemReader → ItemProcessor → ItemWriter 처리 사이클)를 여러 스레드가 동시에 수행한다.
+  - 각 스레드가 독립적인 청크를 가져와 처리하므로 전체 처리량이 향상된다.
+
+![img.png](img/img50.png)
+
+### 멀티쓰레드 스텝에서의 StepExecution 바인딩
+
+이전에 StepExecution과 JobExecution을 ThreadLocal에 저장했다가, 실제 Bean 객체가 실행될 때 파라미터로 바인딩된다고 설명했었다.
+
+멀티쓰레드 스텝에서는 각 워커 쓰레드의 ThreadLocal에도 StepExecution이 저장되어 정상적으로 StepExecution 을 가져와 사용할 수 있다.
+
+### 기본 예시 코드
+
+예시 코드는 아래와 같다.
+
+```java
+@Bean
+public Step threatAnalysisStep() {
+    return new StepBuilder("threatAnalysisStep", jobRepository)
+        .<HumanThreatData, TargetPriorityResult>chunk(100)
+        .reader(humanThreatDataReader())
+        .processor(threatAnalysisProcessor())
+        .writer(targetListWriter())
+        .taskExecutor(taskExecutor()) //Step을 실행할 Executor 설정
+        .throttleLimit(5) //최대 쓰로틀 횟수 설정
+        .build();
+}
+
+/**
+ * 멀티쓰레딩이 가능하도록 설정한 커스텀 TaskExecutor
+ */
+@Bean
+public TaskExecutor taskExecutor() {
+    ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+    executor.setCorePoolSize(5);
+    executor.setMaxPoolSize(5);
+    executor.setWaitForTasksToCompleteOnShutdown(true);
+    executor.setAwaitTerminationSeconds(10);
+    executor.setThreadNamePrefix("T-800-");
+    executor.setAllowCoreThreadTimeOut(true);
+    executor.setKeepAliveSeconds(30);
+    return executor;
+}
+```
+
+각 코드의 자세한 설명은 차차 이어간다.
+
+## 멀티스레드 환경에서의 스레드 안전성
+
+Spring Batch의 스레드 안전성은 크게 두 가지 측면으로 나뉜다.
+
+- 데이터 처리 안전성 (데이터 읽고/쓰기 관점에서의 스레드 안전성)
+- 실행 상태 안전성 (메타데이터 기록 동기화 관점에서의 스레드 안전성)
+
+위 두가지에 대해 살펴본다.
+
+### 데이터 처리 안전성 (데이터 읽고/쓰기 관점에서의 스레드 안전성)
+
+#### ItemReader 와 SynchronizedItemStreamReader/SynchronizedItemReader
+
+ItemReader 에는 Thread Safe 한 것과 그렇지 않은 것들이 존재한다. 대표적인 ItemReader 의 쓰레드 안전성 여부는 아래와 같다.
+
+- FlatFileItemReader : `This reader is not thread-safe.` 라는 주석을 확인할 수 있다. 즉 Thread Safe하지 않다.
+- JpaCursorItemReader : 마찬가지로 `This reader is not thread-safe.` 라는 주석을 확인할 수 있다. 즉 Thread Safe하지 않다.
+- JdbcPagingItemReader : Thread Safe 하다!
+
+만약 Thread Safe하지 않은 ItemReader를 멀티쓰레딩에 사용하려고 한다면, SynchronizedItemReader 혹은 SynchronizedItemStreamReader 를 사용하면 된다.
+
+SynchronizedItemReader 와 SynchronizedItemStreamReader 는 쓰레드 안전 데코레이터로, `read()` 메서드에 ReentrantLock을 적용해 읽기시 쓰레드간 동시접근을 방지한다.
+
+둘의 차이는 ItemStream을 구현한 ItemReader를 사용하는지에 대한 여부에 있다.
+
+- SynchronizedItemReader :
+  - 실제 `read()` 할 ItemReader 가 ItemStream 을 구현하지 않았을 때 사용 
+- SynchronizedItemStreamReader
+  - 실제 `read()` 할 ItemReader 가 ItemStream 을 구현했을때 사용
+  - ItemStream 메서드 `open()` , `update()`, `close()` 가 존재하고, 모두 실제 ItemReader의 메서드를 호출한다.
+
+아래 예시코드는 ThreadSafe 하지 않은 ItemReader 중 하나인 FlatFileItemReader 를 SynchronizedItemStreamReader로 감싸서 ThreadSafe하게 만드는 예시이다.
+
+```java
+@Bean
+public Step threatAnalysisStep() {
+    return new StepBuilder("threatAnalysisStep", jobRepository)
+            .<HumanThreatData, TargetPriorityResult>chunk(100, transactionManager)
+            .reader(threadSafeHumanThreatReader()) //ThreadSafe한 ItemReader 적용
+            .processor(threatAnalysisProcessor())
+            .writer(targetListWriter())
+            .taskExecutor(taskExecutor())
+            .throttleLimit(5)
+            .build();
+}
+
+/**
+ * 반환타입을 ItemReader가 아닌 ItemStreamReader으로 설정하여, 해당 ItemReader가 ItemStream 으로도 등록되도록 함.
+ * (특히 @StepScope 등 프록시 객체로 생성되는 경우) 
+ */
+@Bean
+public ItemStreamReader<HumanThreatData> threadSafeHumanThreatReader() {
+    //사용할 FlatFileItemReader
+    FlatFileItemReader<HumanThreatData> reader = new FlatFileItemReaderBuilder<HumanThreatData>()
+            .name("humanThreatDataReader")
+            .resource(new ClassPathResource("human-threats.csv"))
+            .delimited()
+            .names("humanId", "name", "location", "threatLevel", "lastActivity")
+            .targetType(HumanThreatData.class)
+            .build(); //ItemStream이 구현된 ItemReader
+
+    //쓰레드 안전 데코레이터로 감싸기
+    SynchronizedItemStreamReader<HumanThreatData> synchronizedReader = new SynchronizedItemStreamReader<>();
+    synchronizedReader.setDelegate(reader); //set으로 실제 ItemReader 설정
+
+    return synchronizedReader;
+}
+
+@Bean
+public ItemReader<HumanThreatData> threadSafeHumanThreatReader2() {
+    List<HumanThreatData> threats = Arrays.asList(
+        new HumanThreatData(1L, "Unknown-A", "Seoul", 5),
+        new HumanThreatData(2L, "Unknown-B", "Busan", 3),
+        new HumanThreatData(3L, "Unknown-C", "Gwangju", 9)
+    );
+    ListItemReader reader = new ListItemReader<>(threats); //ItemStream이 구현되지 않은 ItemReader
+
+    //쓰레드 안전 데코레이터로 감싸기
+    SynchronizedItemReader<HumanThreatData> synchronizedReader = new SynchronizedItemReader<>(reader); //생성자 파라미터로 전달
+    
+    return synchronizedReader;
+}
+```
+
+#### ItemWriter 와 SynchronizedItemStreamWriter/SynchronizedItemWriter
+
+ItemWriter 의 경우에도 위와 동일하다.
+
+ItemStream을 구현하는 ItemWriter를 ThreadSafe하게 사용하려면 SynchronizedItemStreamWriter 로 감싸고, ItemStream을 구현하지 않는 ItemWriter를 ThreadSafe하게 사용하려면 SynchronizedItemWriter 로 감싸면 된다.
+
+이외 사항은 모두 위와 동일하다.
+
+### 실행 상태 안전성 (메타데이터 기록 동기화 관점에서의 스레드 안전성)
+
