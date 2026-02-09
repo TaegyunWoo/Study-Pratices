@@ -5463,3 +5463,110 @@ ItemStream을 구현하는 ItemWriter를 ThreadSafe하게 사용하려면 Synchr
 
 ### 실행 상태 안전성 (메타데이터 기록 동기화 관점에서의 스레드 안전성)
 
+위에서 데이터를 읽고 쓰는 데이터 처리 안전성에 대해 알아봤다.
+
+멀티쓰레딩 환경에서 고려해야할 사항으로, 데이터 처리 안전성외에 실행 상태 안전성이 있다.
+
+실행 상태 안전성은 Spring Batch 스텝의 상태(e.g. 메타데이터)가 어떻게 관리되는지에 대한 문제이다. 특히 **재시작 기능**과 밀접하다.
+
+FlatFileItemWriter 를 예시로 설명하겠다.
+
+FlatFileItemWriter 의 내부 코드를 보면, 어떤 공유변수도 사용되지 않아 Thread Safe 한 것처럼 보인다. 실제로 FlatFileItemWriter 는 item을 쓰는 작업에 있어서는 Thread Safe 하다.
+
+**하지만 주석에는 `The implementation is not thread-safe.` 이라는 내용이 있는데, 이는 실행 상태를 관리하는 부분에 있어 Thread Safe 하지 않다는 것이다.**
+
+#### ItemStream 과 실행 상태 안전성
+
+FlatFileItemWriter 는 ItemStream 의 구현체이기도 한데, 멀티스레드 환경에서는 이런 open()/close() 메서드가 여러 스레드에서 동시에 호출될 수 있어보인다.
+
+이 경우 파일 핸들 충돌, 중복 헤더 작성, 리소스 경쟁 등의 문제가 발생할 수 있다.
+
+**하지만 다행히도 Spring Batch에서 ItemStream의 `open()` 과 `close()` 는 메인 쓰레드 1개에서만 실행되어 이런 문제는 발생하지 않는다.**
+
+멀티 스레드 스텝은 청크 처리만 여러 스레드가 처리할 뿐이다.
+
+단, 유의해야하는 것은 `update()` 이다.
+
+여러 쓰레드에서 청크처리를 하면, `update()` 가 각 쓰레드마다 실행된다. 따라서 ExecutionContext 는 가장 마지막에 실행된 `update()` 에서의 상태로 덮어씌워진다.
+
+**즉, 여러 스레드가 동시에 update() 메서드를 호출할 수 있고, 이러면 ExecutionContext에 마지막으로 업데이트한 쓰레드의 정보만 남게 되어 데이터 불일치가 발생한다는 것이다.**
+
+**이 문제를 해결하기 위해선 `saveState(false)`로 설정하여 재시작 기능을 포기해야 한다.**
+
+**FlatFileItemWriter 뿐만 아니라, JdbcPagingItemReader 같은 대부분의 ItemStream 구현체를 멀티쓰레딩 환경에서 사용시 `saveState(false)`로 설정하여 재시작 기능을 포기해야 한다.**
+
+## 멀티쓰레드 환경에서의 Job : 실전 예제 코드
+
+```java
+@Configuration
+@Slf4j
+@RequiredArgsConstructor
+public class T800ProtocolConfig {
+    private final JobRepository jobRepository;
+    private final PlatformTransactionManager transactionManager;
+    private final EntityManagerFactory entityManagerFactory;
+
+    @Bean
+    public Job humanThreatAnalysisJob(Step threatAnalysisStep) {
+        return new JobBuilder("humanThreatAnalysisJob", jobRepository)
+            .start(threatAnalysisStep)
+            .incrementer(new RunIdIncrementer())
+            .build();
+    }
+
+    @Bean
+    public Step threatAnalysisStep(
+        JpaPagingItemReader<Human> humanThreatDataReader,
+        ItemProcessor<Human, TargetPriorityResult> threatAnalysisProcessor,
+        FlatFileItemWriter<TargetPriorityResult> targetListWriter
+    ) {
+        return new StepBuilder("threatAnalysisStep", jobRepository)
+            .<Human, TargetPriorityResult>chunk(10, transactionManager)
+            .reader(humanThreatDataReader)
+            .processor(threatAnalysisProcessor)
+            .writer(targetListWriter)
+            .taskExecutor(taskExecutor())
+            .throttleLimit(5) //반드시 taskExecutor의 MaxPoolSize 와 같거나 커야한다.
+            .build();
+    }
+
+    @Bean
+    public TaskExecutor taskExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(5); //쓰레드 풀 기본 사이즈
+        executor.setMaxPoolSize(5); //쓰레드 풀 최대 사이즈
+        executor.setWaitForTasksToCompleteOnShutdown(true); //잡 중단시 모든 작업이 완료될 때까지 대기
+        executor.setAwaitTerminationSeconds(10); //잡 중단시 모든 작업이 완료될 때까지 대기할 시간(sec) 설정
+        executor.setThreadNamePrefix("T-800-"); //쓰레드 이름 설정
+        executor.setAllowCoreThreadTimeOut(true); //유휴 쓰레드를 종료할지 여부
+        executor.setKeepAliveSeconds(30); //유휴 상태 유지 시간(sec)
+        return executor;
+    }
+}
+```
+
+- [batch-system-with-mvc/src/main/java/com/system/batch/mvc/config/T800ProtocolConfig.java](batch-system-with-mvc/src/main/java/com/system/batch/mvc/config/T800ProtocolConfig.java)
+
+### taskExecutor 코드 설명
+
+- `corePoolSize()` / `maxPoolSize()`
+  - 위 예시 코드에서는 corePoolSize와 maxPoolSize를 동일하게 설정했다. 
+  - 배치 작업은 지속적인 부하를 처리하기 위한 것이 아니라, 주어진 데이터를 최대한 빠르게 처리하기 위한 것이다. 
+  - 따라서 처음부터 최대 쓰레드를 투입하는 것이 효율적이다.
+- `waitForTasksToCompleteOnShutdown()` / `awaitTerminationSeconds()`
+  - 배치 작업이 중단 신호를 받았을 때의 동작을 정의한다.
+  - 위 예시 코드에서는 처리 중인 모든 작업이 완료될 때까지 최대 10초간 대기하도록 한다.
+  - 실전에서는 청크당 처리 시간을 고려하여 이 값을 더 길게 설정해야 한다. 데이터 처리가 복잡하거나 네트워크 지연이 있는 작전에서는 30초 이상으로 설정하는 것이 안전하다.
+- `allowCoreThreadTimeout()` / `keepAliveSeconds()`
+  - 스레드 풀 특성상 스레드은 처리할 작업이 없어도 계속 유지되며, 이로 인해 배치잡이 모두 완료되어도 JVM이 종료되지 않는 현상이 발생한다.
+  - 배치 작업은 보통 실행 완료 후 JVM도 함께 종료되어야 하는 경우가 많다.
+  - 따라서 이 설정으로 유휴 상태의 스레드을 30초 후 자동으로 종료시켜 JVM이 정상적으로 종료될 수 있게 한다.
+
+> #### threatAnalysisStep 의 throttleLimit
+> 
+> `throttleLimit()`은 청크 처리에 동시에 참여할 수 있는 스레드의 최대 수를 결정한다.
+> 
+> TaskExecutor의 maxPoolSize를 높게 설정해도 `throttleLimit()` 로 설정된 값보다 많은 스레드가 사용되지는 않는다. 이는 설계적 결함에 가깝다.
+> 
+> 따라서 반드시 `throttleLimit()` 을 TaskExecutor의 maxPoolSize와 같거나 크게 설정해야 한다.
+
