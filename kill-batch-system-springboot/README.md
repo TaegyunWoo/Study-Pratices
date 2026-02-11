@@ -5570,3 +5570,198 @@ public class T800ProtocolConfig {
 > 
 > 따라서 반드시 `throttleLimit()` 을 TaskExecutor의 maxPoolSize와 같거나 크게 설정해야 한다.
 
+# 파티셔닝
+
+파티셔닝은 전체 데이터 덩어리를 여러 개의 작은 조각으로 분할하는 것을 의미한다.
+
+그리고 잘게 쪼개진 각각의 파티션을 별도의 쓰레드에 할당하여 동시에 처리하도록 만드는 방식으로 동작한다.
+
+**이때 각각의 쓰레드는 완전히 별도의 StepExecution으로 실행되어, 쓰레드간 공유 자원을 경쟁하는 일을 방지해 성능 향상이 가능하다.**
+
+즉, 파티셔닝은 서로 다른 데이터 범위(파티션)를 처리하는 여러 개의 독립적인 스텝 실행을 동시에 수행하는 것이다.
+
+![img.png](img/img51.png)
+
+## 멀티쓰레드 스텝의 한계와 파티셔닝
+
+- 멀티쓰레드 스텝의 병목 지점 : 멀티스레드 스텝은 하나의 ItemReader/ItemWriter를 여러 스레드가 공유하므로, 락(Lock) 경쟁으로 인해 성능 향상에 한계가 온다.
+- 해결책 : 데이터을 쪼개어(Partition), 각 스레드에게 독립적인 Step 실행 환경과 전용 컴포넌트를 부여한다.
+
+## 파티셔닝 핵심 아키텍처
+
+![img.png](img/img52.png)
+
+파티셔닝은 두개의 핵심 컴포넌트로 구성된다.
+
+- ManagerStep : 실제 데이터를 처리하지 않고 전체 프로세스를 설계 및 감독한다.
+  - StepExecutionSplitter : `Partitioner`를 사용하여 데이터를 분할하고, 각 파티션마다 독립적인 워커용 `StepExecution`들을 생성한다.
+  - PartitionHandler : 생성된 워커용 `StepExecution`들을 `TaskExecutor`(스레드 풀)에 할당하여 병렬 실행을 관리한다.
+- WorkerStep : 할당받은 파티션 범위 내에서 실제 Chunk 프로세싱(Read-Process-Write)을 수행한다.
+  - 핵심적인 부분은 각 워커 스텝은 자신만의 독립적인 ItemReader와 ItemWriter 인스턴스를 가진다는 점이다.
+  - 컴포넌트 인스턴스 자체를 공유하지 않으니, 공유 자원 락(Lock) 경쟁 문제가 원천적으로 발생하지 않는다.
+
+## 핵심 컴포넌트 및 전략
+
+### Partitioner
+
+파티션을 어떻게 나누고, 어떤 워커가 어떤 파티션을 처리할지 결정하기 위해, 아래 `Partitioner` 인터페이스를 구현해야 한다.
+
+```java
+@FunctionalInterface
+public interface Partitioner {
+	Map<String, ExecutionContext> partition(int gridSize);
+}
+```
+
+우리가 이 `Partitioner` 로직을 구현해서 managerStep에게 넘겨주면, 내부적으로 `StepExecutionSplitter`가 파티셔닝 시작 시점에 Partitioner를 실행시킨다.
+
+- Partitioner 실행 이후 처리 프로세스는 아래와 같다.
+  1) 각 파티션의 정보(예: 'ID 1부터 1000까지', '2025년 1월 데이터')가 담긴 ExecutionContext의 맵이 생성된다.
+  2) StepExecutionSplitter는 이를 바탕으로 각 파티션별 StepExecution을 생성한다.
+  3) 그다음 PartitionHandler가 이 StepExecution들을 받아 각 워커 스텝에게 할당하여 병렬 처리를 명령한다.
+
+![img.png](img/img53.png)
+
+#### Partitioner 구현 예시
+
+```java
+/*
+ * 날짜 기반으로 24시간 데이터를 시간대별로 파티셔닝하는 Partitioner (일일 배치용)
+ * JobParameter로 받은 targetDate의 00:00:00 부터 다음 날 00:00:00 까지의 범위를
+ * gridSize에 따라 분할하여 각 파티션의 시작/종료 Instant를 ExecutionContext에 저장한다.
+ */
+@Slf4j
+@JobScope //Job이 실행될때마다 새로운 인스턴스 생성
+@Component
+public class DailyTimeRangePartitioner implements Partitioner {
+    private final LocalDate targetDate;
+
+    public DailyTimeRangePartitioner(
+            @Value("#{jobParameters['targetDate']}") LocalDate targetDate) {
+        log.info("Initializing DailyTimeRangePartitioner for targetDate: {}", targetDate);
+        this.targetDate = targetDate;
+    }
+
+    @Override
+    public Map<String, ExecutionContext> partition(int gridSize) {
+        /*
+         *  💀 gridSize(파티션 개수)가 24(Hours)의 약수인지 확인
+         *  구현 나름이지만, gridSize가
+         *  전체 데이터 크기의 약수가 아니면 던져버리는게 맘 편하다. 💀
+         */
+        if (24 % gridSize != 0) {
+            /*
+             * gridSize가 전체 데이터 크기의 약수가 되면
+             * 각 파티션이 정확히 같은 시간 범위를 갖게 되어
+             * 시스템 부하가 균등하게 분산되고, 행동을 예측하기 쉬워진다.
+             * 또한 파티션 크기 분배 로직이 단순해진다. 💀
+             */
+            throw new IllegalArgumentException("gridSize must be a divisor of 24 (1, 2, 3, 4, 6, 8, 12, or 24)");
+        }
+
+        Map<String, ExecutionContext> partitions = new HashMap<>(gridSize);
+
+        // 💀 targetDate의 시작(00:00:00)과 종료(다음 날 00:00:00) 시점을 계산 💀
+        LocalDateTime startOfDay = targetDate.atStartOfDay();
+        LocalDateTime endOfDay = targetDate.plusDays(1).atStartOfDay();
+
+
+        log.info("Creating {} partitions for time range: {} to {}",
+                gridSize, startOfDay, endOfDay);
+
+        // 💀 각 시간대별로 파티션 생성 💀
+        int partitionHours = 24 / gridSize;
+
+        // 💀 각 파티션의 시작/종료 시간 계산 및 ExecutionContext 생성 💀
+        for (int i = 0; i < gridSize; i++) {
+            LocalDateTime partitionStartDateTime = startOfDay.plusHours(i * partitionHours);
+            LocalDateTime partitionEndDateTime = partitionStartDateTime.plusHours(partitionHours);
+
+            /*
+             * 💀 gridSize가 24시간의 약수가 아닌 경우에는
+             * 마지막 파티션이 다른 파티션보다 더 작거나 클 수 있다.
+             * 이 때 endTime 설정이 필수적이다.
+             * 이렇게 하면 모든 시간대의 데이터가 파티션에 포함되도록 보장할 수 있다. 💀
+             */
+            // if (i == gridSize - 1) {
+            //     partitionEndTime = endOfDay;
+            // }
+
+            // 💀 파티션별 ExecutionContext에 시간 범위 정보 저장 💀
+            ExecutionContext context = new ExecutionContext();
+            context.put("startDateTime", partitionStartDateTime);
+            context.put("endDateTime", partitionEndDateTime);
+
+            log.info("Partition {}: {} to {}", i, partitionStartDateTime, partitionEndDateTime);
+
+            partitions.put(String.valueOf(i), context);
+        }
+
+        return partitions;
+    }
+}
+```
+
+gridSize가 4인 경우, 24시간 동안의 전장 로그 데이터를 6시간 단위로 4개의 파티션으로 나눈다. 각 파티션은 고유한 시간 범위를 가지고, 이 정보는 ExecutionContext에 저장된다.
+
+코드의 전체적인 흐름은 아래와 같다.
+
+1) 파티셔닝을 위한 전체 데이터 범위를 결정한다 (24시간).
+2) 파티션 개수(gridSize)로 전체 범위를 나눠 각 파티션의 범위를 계산한다.
+3) 각 파티션마다 독립적인 ExecutionContext를 생성하고, 그 안에 해당 파티션이 처리해야 할 데이터 범위 정보를 저장한다. 이 ExecutionContext는 후에 각 파티션별 StepExecution에 전달된다.
+4) 모든 파티션의 ExecutionContext를 Map에 담아 반환한다.
+
+마지막에 ExecutionContext를 Map에 담아서 반환하는데, 이 Map이 중요하다.
+
+각 키-값 쌍이 하나의 파티션을 의미하고, 각 값(ExecutionContext)은 해당 파티션이 처리해야할 데이터 범위 정보를 담고 있다.
+
+- Map 의 Key : 각 파티션의 고유 식별자이다. 예제에서는 단순히 숫자 문자열('0', '1', '2', '3')을 사용했지만, 실전에서는 'TIME_BLOCK_1', 'MORNING_LOGS', 'EVENING_LOGS'와 같이 더 의미 있는 식별자를 사용할 수도 있다.
+- Map 의 Value : 해당 파티션이 전달받을 ExecutionContext이다. ExecutionContext들은 각각 독립적인 StepExecution에 전달되어 자신만의 데이터를 처리하게 된다.
+
+이렇게 만들어진 ExecutionContext들은 아래와 같이 ItemReader 에 전달되고, 각 ItemReader에서 자신이 할당받은 데이터 범위를 기반으로 데이터를 읽는다.
+
+```java
+private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyyMMddHH");
+
+/**
+ * 예시 1
+ */
+@Bean
+@StepScope //각 워커 스텝이 실행될 때마다 새로운 인스턴스가 생성된다. 즉 각 파티션마다 독립적인 ItemReader가 생성된다.
+public RedisItemReader<String, BattlefieldLog> redisLogReader(
+        @Value("#{stepExecutionContext['startDateTime']}") LocalDateTime startDateTime //Partitioner에서 전달된 시작 시간
+) {
+    return new RedisItemReaderBuilder<String, BattlefieldLog>()
+        .redisTemplate(redisTemplate())
+        .scanOptions(ScanOptions.scanOptions()               
+           // 💀 Redis에 저장된 전장 로그의 키가 
+            // "logs:[날짜시간]:*" 형식으로 저장되어 있다고 가정 💀 
+            .match("logs:" + startDateTime.format(FORMATTER) + ":*")
+            .count(10000)
+            .build())
+        .build();
+}
+
+/**
+ * 예시 2
+ */
+@Bean
+@StepScope //각 워커 스텝이 실행될 때마다 새로운 인스턴스가 생성된다. 즉 각 파티션마다 독립적인 ItemReader가 생성된다.
+public MongoCursorItemReader<BattlefieldLog> mongoLogReader(
+    // 💀 Partitioner에서 ExecutionContext에 
+    // Date 타입으로 시간 범위 정보를 저장했다고 가정 💀
+    @Value("#{stepExecutionContext['startDateTime']}") Date startDate,
+    @Value("#{stepExecutionContext['endDateTime']}") Date endDate
+) {
+    return new MongoCursorItemReaderBuilder<BattlefieldLog>()
+        .name("mongoLogReader_" + startDateTime)
+        .template(mongoTemplate)
+        .targetType(BattlefieldLog.class)
+        .collection("battlefield_logs")
+        .jsonQuery("{ 'timestamp': { '$gte': ?0, '$lt': ?1 } }")
+        .parameterValues(List.of(startDate, endDate))
+        .sorts(Collections.singletonMap("timestamp", Sort.Direction.ASC))
+        .batchSize(10000)
+        .build();
+}
+```
