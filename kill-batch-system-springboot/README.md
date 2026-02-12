@@ -5765,3 +5765,256 @@ public MongoCursorItemReader<BattlefieldLog> mongoLogReader(
         .build();
 }
 ```
+
+이제 위 예시코드들을 바탕으로 실제로 잡에 파티셔닝을 적용하는 코드는 아래와 같다. 
+
+```java
+/**
+ * Job 정의
+ */
+@Bean
+public Job battlefieldLogPersistenceJob(Step managerStep) {
+    return new JobBuilder("battlefieldLogPersistenceJob", jobRepository)
+            .start(managerStep) // Job은 manager step을 바라본다.
+            .incrementer(new RunIdIncrementer())
+            .build();
+}
+
+/**
+ * 파티션 매니저 스텝
+ */
+@Bean
+public Step managerStep(Step workerStep) {
+    return new StepBuilder("managerStep", jobRepository)
+            // 💀 핵심 1: 파티셔닝 선언 및 Partitioner 주입 💀
+            .partitioner("workerStep", dailyTimeRangePartitioner)
+
+            // 💀 핵심 2: 실제 작업을 수행할 워커 스텝 지정 💀
+            .step(workerStep)
+            .taskExecutor(partitionTaskExecutor()) // 병렬 실행을 위한 TaskExecutor
+            .gridSize(4) // 💀 24시간을 4개(6시간)의 파티션으로 분할 💀
+            .build();
+}
+
+/**
+ * 파티션 워커 스텝
+ */
+@Bean
+public Step workerStep(
+    RedisItemReader<String, BattlefieldLog> redisLogReader,
+    ItemProcessor<BattlefieldLog, BattlefieldLog> logProcessor,
+    MongoItemWriter<BattlefieldLog> mongoLogWriter
+) {
+    return new StepBuilder("workerStep", jobRepository)
+        .<BattlefieldLog, BattlefieldLog>chunk(500, transactionManager)
+        .reader(redisLogReader)
+        .processor(logProcessor)
+        .writer(mongoLogWriter)
+        .build();
+}
+
+/**
+ * 다중 쓰레드 처리를 위한 TaskExecutor
+ */
+@Bean
+public TaskExecutor partitionTaskExecutor() {
+    ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+    // 💀 파티션 개수(gridSize)와 스레드풀 크기를 일치시키면 각 파티션이 💀
+    // 💀 전용 스레드를 할당받아 대기 시간 없이 즉시 처리될 수 있다. 💀
+    executor.setCorePoolSize(4);
+    executor.setMaxPoolSize(4);
+    executor.setThreadNamePrefix("Partition-thread-");
+    executor.setWaitForTasksToCompleteOnShutdown(true);
+    return executor;
+}
+```
+
+- 파티션 매니저 스텝 코드 분석
+  - StepBuilder의 partitioner() :
+    - 이 메서드를 호출하는 순간, Spring Batch는 해당 manager 스텝을 파티셔닝 기반 스텝으로 생성한다.
+    - 첫번째 파라미터 : 파티셔닝할 워커 스텝의 이름
+    - 두번째 파라미터 : 직접 구현한 Partitioner 구현체
+  - StepBuilder의 step() :
+    - 이 메서드는 실제 배치 스텝 로직을 담당하는 workerStep을 전달한다.
+    - 이 메서드에 workerStep을 전달함으로써, manager는 이 워커의 복제본을 여러 개 생성하고 각각 다른 파티션을 처리하게 된다.
+  - StepBuilder의 gridSize() :
+    - 생성할 파티션 개수를 지정한다.
+    - 이 개수만큼 나뉜 파티션은 taskExecutor의 가용 쓰레드 한도 내에서 최대한 병렬로 처리된다.
+- 파티션 워커 스텝 코드 분석
+  - 해당 스텝은 일반적인 chunk 지향 스텝과 동일한 구성을 갖고 있다.
+  - 이 스텝은 파티션별로 개별적으로 생성되어 동작한다. 파티션별로 각각 생성되기에 쓰레드간 공유 자원 경쟁없이 실행된다.
+- 다중 쓰레드 TaskExecutor 코드 분석
+  - 이는 다중 쓰레드 섹션에서 다뤘던 것과 동일하다.
+  - 다만 중요한 것은 setCorePoolSize 와 setMaxPoolSize 로 지정된 크기가 파티션의 개수와 동일하다는 점이다. 이를 통해, 각 파티션이 전용 스레드를 할당받아 대기 시간 없이 즉시 처리될 수 있다.
+
+#### 파티셔닝 전체 예시 코드
+
+전체 예시 코드는 아래에서 확인해볼 수 있다.
+
+[batch-system-with-mvc/src/main/java/com/system/batch/mvc/config/BattlefieldLogPersistenceJobConfig.java](batch-system-with-mvc/src/main/java/com/system/batch/mvc/config/BattlefieldLogPersistenceJobConfig.java)
+
+### 파티션으로 나눈 스텝 내에서 다중 쓰레드 사용
+
+위에서 한 파티션마다 하나의 전용 쓰레드를 할당하여 처리하는 방법에 대해 알아보았다.
+
+이번엔 한 파티션에 대해 또다시 멀티 쓰레드를 할당하여 처리하는 방법에 대해 알아본다.
+
+```java
+/**
+ * 워커 스텝
+ */
+@Bean
+public Step workerStep(
+        SynchronizedItemStreamReader<BattlefieldLog> synchronizedItemStreamReader,
+        ItemProcessor<BattlefieldLog, BattlefieldLog> logProcessor,
+        MongoItemWriter<BattlefieldLog> mongoLogWriter
+) {
+    return new StepBuilder("workerStep", jobRepository)
+            .<BattlefieldLog, BattlefieldLog>chunk(500, transactionManager)
+            .reader(synchronizedItemStreamReader)
+            .processor(logProcessor)
+            .writer(mongoLogWriter)
+            // 💀 워커 스텝에도 별도의 스레드 풀 지정! 다중 계층 병렬화의 핵심! 💀
+            .taskExecutor(workerTaskExecutor())
+            .build();
+}
+
+/**
+ * Thread Safe 한 ItemReader
+ */
+@Bean
+@StepScope
+public SynchronizedItemStreamReader<BattlefieldLog> synchronizedItemStreamReader(
+        @Value("#{stepExecutionContext['startDateTime']}") LocalDateTime startDateTime) {
+    RedisItemReader<String, BattlefieldLog> redisItemReader = 
+        new RedisItemReaderBuilder<String, BattlefieldLog>()
+            .redisTemplate(redisTemplate())
+            .scanOptions(ScanOptions.scanOptions()
+                    .match("logs:" + startDateTime.format(FORMATTER) + ":*")
+                    .count(10000)
+                    .build())
+            .build();
+    
+    // 💀 스레드 안전하지 않은 ItemReader는 SynchronizedItemStreamReader로 감싸 동기화 처리 💀
+    // 💀 멀티스레드 환경에서 안전한 접근을 보장하지만, 락으로 인한 성능 제약은 여전히 존재 💀
+    return new SynchronizedItemStreamReader<>(redisItemReader);
+}
+```
+
+이처럼 파티션별로 각각의 쓰레드를 할당하고, 각 파티션 내에서 또다시 여러 쓰레드를 사용하도록 구성하는 방법이 바로, **다중 계층 병렬화(Multi-Level Parallelization)**라는 기법이다.
+
+이는 처리량을 극한으로 올릴 수 있는 방법이다. (물론 파티션 내에서 공유 자원 경쟁이 발생하긴 한다.)
+
+하지만 대부분의 경우, 단순히 파티션의 개수를 늘리는 등의 방법을 취하는 것이 유지보수 측면에서 유리하다. 하지만 아래와 같은 경우에, 다중 계층 병렬화를 고려해볼 수 있다.
+
+- 논리적 파티션 수에 제약이 있는 경우
+  - e.g) 데이터를 반드시 5개 대륙 별로만 파티셔닝해야 하는데, 스레드는 20개까지 사용 가능한 경우, 각 파티션 내에서 추가 병렬화가 필요하게 된다.
+- ItemProcessor 단에서 개별 아이템 처리가 병목인 경우
+  - 파티셔닝은 파티션 단위로 데이터를 분할하지만, 각 파티션 내에서 아이템 처리는 여전히 순차적으로 이루어진다.
+  - 만약 특정 아이템의 처리가 매우 복잡하고 시간이 오래 걸린다면, 파티션을 늘려도 그 병목은 해결되지 않는다. 이때 워커 스텝을 멀티스레드로 구성하면 파티션 내 아이템 처리도 병렬화할 수 있다.
+
+**굳이 필요 없는 경우에는 파티션 수를 늘리는 것이 복잡도 측면에서 훨씬 낫다는 점은 반드시 기억하자.**
+
+### 파일 기반 Partitioner
+
+이번에는 여러 파일을 대상으로 파티셔닝을 하는 방법에 대해 알아보자.
+
+이를 위해 스프링 배치는 MultiResourcePartitioner 를 제공한다. MultiResourcePartitioner 는 각 파티션이 서로 다른 파일을 완전히 독립적으로 처리하게 된다.
+
+#### MultiResourcePartitioner 코드 분석
+
+MultiResourcePartitioner 는 아래와 같이 구현되어 있다.
+
+```java
+public class MultiResourcePartitioner implements Partitioner {
+  // 💀 이 값을 key로 각 스레드가 읽어들일 파일의 이름이 저장된다.💀
+    private static final String DEFAULT_KEY_NAME = "fileName";
+    private static final String PARTITION_KEY = "partition";
+    private Resource[] resources = new Resource[0];
+    private String keyName = DEFAULT_KEY_NAME;
+
+    public void setResources(Resource[] resources) {
+	    this.resources = resources; // 1. 처리할 Resource(파일)들의 배열을 받아들인다.
+    }
+
+    @Override
+    public Map<String, ExecutionContext> partition(int gridSize) { //파일의 개수만큼 파티션이 생성되기 때문에, gridSize 파라미터는 무시된다.
+        Map<String, ExecutionContext> map = new HashMap<>(gridSize);
+        int i = 0;
+        for (Resource resource : resources) {
+            ExecutionContext context = new ExecutionContext(); // 2. 각 Resource마다 별도의 ExecutionContext를 생성한다.
+            Assert.state(resource.exists(), "Resource does not exist: " + resource);
+            try {
+                context.putString(keyName, resource.getURL().toExternalForm()); // 3. 각 ExecutionContext에는 파일의 위치를 'fileName'이라는 key에 저장한다.
+            }
+            catch (IOException e) {
+                throw new IllegalArgumentException("File could not be located for: " + resource, e);
+            }
+            map.put(PARTITION_KEY + i, context);
+            i++;
+        }
+        return map;
+    }
+}
+```
+
+#### MultiResourcePartitioner 사용 예시 코드
+
+```java
+/**
+ * MultiResourcePartitioner Bean 객체 등록
+ */
+@Bean
+@StepScope
+public Partitioner partitioner(@Value("#{jobParameters['path']}") String path) {
+    MultiResourcePartitioner partitioner = new MultiResourcePartitioner();
+    ResourcePatternResolver resourcePatternResolver = new PathMatchingResourcePatternResolver();
+
+    try {
+        Resource[] resources = resourcePatternResolver.getResources("file://" + path + "/*.csv");
+        log.info("Found {} resources to process", resources.length);
+        partitioner.setResources(resources);
+    } catch (IOException e) {
+        throw new IllegalStateException("Failed to read battlefield log files", e);
+    }
+
+    return partitioner;
+}
+
+/**
+ * MultiResourcePartitioner 가 파티셔닝했을 때, 각 파티션에서 사용될 ItemReader 정의
+ */
+@Bean
+@StepScope
+public FlatFileItemReader<BattlefieldLog> battlefieldLogReader(
+    @Value("#{stepExecutionContext['fileName']}") String fileName
+) {
+    ResourcePatternResolver resourceLoader =
+        new PathMatchingResourcePatternResolver();
+
+    return new FlatFileItemReaderBuilder<BattlefieldLog>()
+        .name("battlefieldLogReader")
+        .resource(resourceLoader.getResource(fileName))
+        .linesToSkip(1)
+        .delimited()
+        .names("id", "timestamp", "region", "source", "level", "category", "message")
+        .targetType(BattlefieldLog.class)
+        .customEditors(Map.of(LocalDateTime.class, dateTimeEditor()))
+        .build();
+}
+
+private PropertyEditor dateTimeEditor() {
+    return new PropertyEditorSupport() {
+        @Override
+        public void setAsText(String text) {
+            setValue(LocalDateTime.parse(text));
+        }
+    };
+}
+```
+
+JobParameters에서 전달받은 파일 경로 패턴(예:'/path/to/logs')을 ResourcePatternResolver를 통해 Resource 배열로 변환한다. 그리고 이렇게 찾아낸 모든 파일에 대해 각각 파티션이 생성된다.
+
+예를 들어, 'battlefield_logs_*.csv' 패턴으로 4개의 파일이 발견된다면, 4개의 파티션이 생성되고 taskExecutor의 가용 스레드 제한 내에서 최대한 병렬로 처리된다.
+
+만약 사전에 처리할 파일 개수를 알 수 있다면, taskExecutor의 스레드풀 크기를 해당 파일 개수와 일치시키는 것이 가장 효율적이다. 
