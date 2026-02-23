@@ -1,6 +1,7 @@
 package com.system.batch.lesson.flatfileitemreader;
 
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 import lombok.RequiredArgsConstructor;
 import lombok.ToString;
 import lombok.extern.slf4j.Slf4j;
@@ -142,6 +143,7 @@ public class PatternMatchingSystemFailureJobConfig {
     }
 
     @Data
+    @EqualsAndHashCode(callSuper=false)
     @ToString(callSuper = true)
     public static class ErrorLogPatternMatching extends PatternMatchingSystemLog {
         private String application;
@@ -152,6 +154,7 @@ public class PatternMatchingSystemFailureJobConfig {
     }
 
     @Data
+    @EqualsAndHashCode(callSuper=false)
     @ToString(callSuper = true)
     public static class AbortLogPatternMatching extends PatternMatchingSystemLog {
         private String application;
@@ -163,6 +166,7 @@ public class PatternMatchingSystemFailureJobConfig {
     }
 
     @Data
+    @EqualsAndHashCode(callSuper=false)
     @ToString(callSuper = true)
     public static class CollectLogPatternMatching extends PatternMatchingSystemLog {
         private String dumpType;

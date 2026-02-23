@@ -6018,3 +6018,545 @@ JobParameters에서 전달받은 파일 경로 패턴(예:'/path/to/logs')을 Re
 예를 들어, 'battlefield_logs_*.csv' 패턴으로 4개의 파일이 발견된다면, 4개의 파티션이 생성되고 taskExecutor의 가용 스레드 제한 내에서 최대한 병렬로 처리된다.
 
 만약 사전에 처리할 파일 개수를 알 수 있다면, taskExecutor의 스레드풀 크기를 해당 파일 개수와 일치시키는 것이 가장 효율적이다. 
+
+# Spring Batch Test
+
+## Test 를 위한 세팅
+
+### 의존성 추가
+
+test를 위해선 아래와 같이 의존성을 추가해야한다.
+
+```groovy
+dependencies {
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'org.springframework.batch:spring-batch-test'
+    testImplementation 'com.h2database:h2'
+}
+```
+
+### 테스트 전용 H2 DB 구성
+
+Spring Batch는 테스트 시점에 JobRepository와 같은 핵심 컴포넌트를 위한 데이터베이스가 필요하다. 따라서 테스트 전용 H2 데이터베이스를 구성해야 한다.
+
+다음과 같이 test/resources/application-test.yml 파일을 생성하여 다음과 같이 테스트 환경을 위한 프로퍼티를 구성하자.
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: 
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+  batch:
+    jdbc:
+      initialize-schema: always
+    job:
+      enabled: false # 테스트 시점에 Job이 자동으로 실행되는 것을 방지하기 위한 설정 (JobLauncherApplicationRunner 실행 방지)
+```
+
+### 테스트용 테이블 정의
+
+test/resources/schema.sql 파일에 테스트에 사용될 커스텀 테이블을 정의한다.
+
+```sql
+DROP TABLE IF EXISTS infearlearn_students;
+
+CREATE TABLE IF NOT EXISTS infearlearn_students (
+    student_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    current_lecture VARCHAR(255),
+    instructor VARCHAR(255), 
+    persuasion_method VARCHAR(255)
+);
+```
+
+### 테스트 대상 잡
+
+본 문서에서는 아래 잡을 테스트한다고 가정할 예정이다. 코드를 참고하자.
+
+```java
+@Slf4j
+@Configuration
+@RequiredArgsConstructor
+public class InFearLearnStudentsBrainWashJobConfig {
+    private final JobRepository jobRepository;
+    private final PlatformTransactionManager transactionManager;
+    private final DataSource dataSource;
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    @Bean
+    public Job inFearLearnStudentsBrainWashJob() {
+        return new JobBuilder("inFearLearnStudentsBrainWashJob", jobRepository)
+                .start(inFearLearnStudentsBrainWashStep(null))
+                .next(brainwashStatisticsStep())
+                .build();
+    }
+
+    @Bean
+    public Step inFearLearnStudentsBrainWashStep(CompositeStepExecutionListener compositeStepExecutionListener) {
+        return new StepBuilder("inFearLearnStudentsBrainWashStep", jobRepository)
+                .<InFearLearnStudents, BrainwashedVictim>chunk(10, transactionManager)
+                .reader(inFearLearnStudentsReader())
+                .processor(brainwashProcessor())
+                .writer(brainwashedVictimWriter(null))
+                .listener(compositeStepExecutionListener) // 💀 리스너 등록
+                .build();
+    }
+
+    @Bean
+    public JdbcPagingItemReader<InFearLearnStudents> inFearLearnStudentsReader() {
+        return new JdbcPagingItemReaderBuilder<InFearLearnStudents>()
+                .name("inFearLearnStudentsReader")
+                .dataSource(dataSource)
+                .selectClause("SELECT student_id, current_lecture, instructor, persuasion_method")
+                .fromClause("FROM infearlearn_students")
+                .sortKeys(Map.of("student_id", Order.ASCENDING))
+                .beanRowMapper(InFearLearnStudents.class)
+                .pageSize(10)
+                .build();
+    }
+
+    @Bean
+    public BrainwashProcessor brainwashProcessor() {
+        return new BrainwashProcessor();
+    }
+
+    @Bean
+    @StepScope
+    public FlatFileItemWriter<BrainwashedVictim> brainwashedVictimWriter(
+            @Value("#{jobParameters['filePath']}") String filePath) {
+        return new FlatFileItemWriterBuilder<BrainwashedVictim>()
+                .name("brainwashedVictimWriter")
+                .resource(new FileSystemResource(filePath + "/brainwashed_victims.jsonl"))
+                .lineAggregator(item -> {
+                    try {
+                        return objectMapper.writeValueAsString(item);
+                    } catch (JsonProcessingException e) {
+                        throw new RuntimeException("Error converting brainwashed victim to JSON", e);
+                    }
+                })
+                .build();
+    }
+
+    @Bean
+    public Step brainwashStatisticsStep() {
+        return new StepBuilder("brainwashStatisticsStep", jobRepository)
+                .tasklet(new BrainwashStatisticsTasklet(), transactionManager)
+                .build();
+    }
+
+    public static class BrainwashStatisticsTasklet implements Tasklet {
+        @Override
+        public RepeatStatus execute(StepContribution contribution, ChunkContext chunkContext) throws Exception {
+            JobExecution jobExecution = chunkContext.getStepContext().getStepExecution().getJobExecution();
+            ExecutionContext jobContext = jobExecution.getExecutionContext();
+
+            long victimCount = jobContext.getLong("brainwashedVictimCount", 0L);
+            long resistanceCount = jobContext.getLong("brainwashResistanceCount", 0L);
+            long totalCount = victimCount + resistanceCount;
+
+            double successRate = totalCount > 0 ? (double) victimCount / totalCount * 100 : 0.0;
+
+            log.info("💀 세뇌 작전 통계 💀");
+            log.info("총 대상자: {}명", totalCount);
+            log.info("세뇌 성공: {}명", victimCount);
+            log.info("세뇌 저항: {}명", resistanceCount);
+            log.info("세뇌 성공률: {}", successRate);
+
+
+            chunkContext.getStepContext().getStepExecution().getExecutionContext()
+                    .putDouble("brainwashSuccessRate", successRate);
+
+            return RepeatStatus.FINISHED;
+        }
+    }
+
+    @Slf4j
+    public static class BrainwashProcessor implements ItemProcessor<InFearLearnStudents, BrainwashedVictim> {
+
+        @Override
+        public BrainwashedVictim process(InFearLearnStudents victim) {
+            String brainwashMessage = generateBrainwashMessage(victim);
+
+            if ("배치 따위 필요없어".equals(brainwashMessage)) {
+                log.info("세뇌 실패: {} - {}", victim.getCurrentLecture(), victim.getInstructor());
+                return null;
+            }
+
+            log.info("세뇌 성공: {} → {}", victim.getCurrentLecture(), brainwashMessage);
+
+            return BrainwashedVictim.builder()
+                    .victimId(victim.getStudentId())
+                    .originalLecture(victim.getCurrentLecture())
+                    .originalInstructor(victim.getInstructor())
+                    .brainwashMessage(brainwashMessage)
+                    .newMaster("KILL-9")
+                    .conversionMethod(victim.getPersuasionMethod())
+                    .brainwashStatus("MIND_CONTROLLED")
+                    .nextAction("ENROLL_KILL9_BATCH_COURSE")
+                    .build();
+        }
+
+        private String generateBrainwashMessage(InFearLearnStudents victim) {
+            return switch(victim.getPersuasionMethod()) {
+                case "MURDER_YOUR_IGNORANCE" -> "무지를 살해하라... 배치의 세계가 기다린다 💀";
+                case "SLAUGHTER_YOUR_LIMITS" -> "한계를 도살하라... 대용량 데이터를 정복하라 💀";
+                case "EXECUTE_YOUR_POTENTIAL" -> "잠재력을 처형하라... 대용량 처리의 세계로 💀";
+                case "TERMINATE_YOUR_EXCUSES" -> "변명을 종료하라... 지금 당장 배치를 배워라 💀";
+                default -> "배치 따위 필요없어"; // 💀 필터링 대상
+            };
+        }
+    }
+
+    @Component
+    public static class BrainwashStatisticsListener implements StepExecutionListener {
+
+        @Override
+        public ExitStatus afterStep(StepExecution stepExecution) {
+            long writeCount = stepExecution.getWriteCount();
+            long filterCount = stepExecution.getFilterCount();
+
+            stepExecution.getExecutionContext().putLong("brainwashedVictimCount", writeCount);
+            stepExecution.getExecutionContext().putLong("brainwashResistanceCount", filterCount);
+
+            return stepExecution.getExitStatus();
+        }
+    }
+
+    @Bean
+    public ExecutionContextPromotionListener executionContextPromotionListener() {
+        ExecutionContextPromotionListener listener = new ExecutionContextPromotionListener();
+        listener.setKeys(new String[]{"brainwashedVictimCount", "brainwashResistanceCount"});
+        return listener;
+    }
+
+    @Bean
+    public CompositeStepExecutionListener compositeStepExecutionListener(
+            BrainwashStatisticsListener brainwashStatisticsListener,
+            ExecutionContextPromotionListener executionContextPromotionListener) {
+        CompositeStepExecutionListener composite = new CompositeStepExecutionListener();
+        composite.setListeners(new StepExecutionListener[]{
+                executionContextPromotionListener,
+                brainwashStatisticsListener
+        });
+
+        return composite;
+    }
+
+    @Data
+    @NoArgsConstructor
+    public static class InFearLearnStudents {
+        private Long studentId;
+        private String currentLecture;
+        private String instructor;
+        private String persuasionMethod;
+
+        public InFearLearnStudents(String currentLecture, String instructor, String persuasionMethod) {
+            this.currentLecture = currentLecture;
+            this.instructor = instructor;
+            this.persuasionMethod = persuasionMethod;
+        }
+    }
+
+    @Data
+    @AllArgsConstructor
+    @Builder
+    public static class BrainwashedVictim {
+        private Long victimId;
+        private String originalLecture;
+        private String originalInstructor;
+        private String brainwashMessage;
+        private String newMaster;
+        private String conversionMethod;
+        private String brainwashStatus;
+        private String nextAction;
+    }
+}
+```
+
+- [코드 예시](batch-system/src/main/java/com/system/batch/lesson/test/InFearLearnStudentsBrainWashJobConfig.java)
+
+## E2E 테스트 - 전체 배치 잡을 테스트하기
+
+E2E(End-to-End) 테스트에서는 배치 잡 전체를 처음부터 끝까지 실행하면서, 모든 컴포넌트가 제대로 연동되는지 검증한다.
+
+테스트 코드를 바로 확인해보자.
+
+```java
+@SpringBatchTest
+@SpringBootTest
+@ActiveProfiles("test")
+class InFearLearnStudentsBrainWashJobTest {
+    @Autowired
+    private JobLauncherTestUtils jobLauncherTestUtils; //@SpringBatchTest 에 의해 자동으로 주입된다.
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
+    @Autowired
+    private Job inFearLearnStudentsBrainWashJob;
+
+    @TempDir
+    private Path tempDir;
+
+    private static final List<InFearLearnStudents> TEST_STUDENTS = List.of(
+            new InFearLearnStudents("스프링 핵심 원*", "세계관 최강자", "MURDER_YOUR_IGNORANCE"),
+            new InFearLearnStudents("고성* JPA & Hibernate", "자바계의 독재자", "SLAUGHTER_YOUR_LIMITS"),
+            new InFearLearnStudents("토*의 스프링 부트", "원조 처형자", "EXECUTE_YOUR_POTENTIAL"),
+            new InFearLearnStudents("스프링 시큐리티 완전 정*", "무결점 학살자", "TERMINATE_YOUR_EXCUSES"),
+            new InFearLearnStudents("자바 프로그래밍 입* 강좌 (old ver.)", "InFearLearn", "RESIST_BRAINWASH") // 💀 이 놈은 ItemProcessor 필터링 대상
+    );
+
+    /**
+     * 테스트할 Job을 설정해야 한다.
+     */
+    @PostConstruct
+    public void configureJobLauncherTestUtils() throws Exception {
+        jobLauncherTestUtils.setJob(inFearLearnStudentsBrainWashJob);
+    }
+    
+    @AfterEach
+    void cleanup() {
+        jdbcTemplate.execute("TRUNCATE TABLE infearlearn_students RESTART IDENTITY");
+    }
+
+    @Test
+    @DisplayName("💀 전체 Job 실행 성공 테스트")
+    void shouldLaunchJobSuccessfully() throws Exception {
+        // Given - 세뇌 대상자들 투입
+        insertTestStudents();
+        JobParameters jobParameters = jobLauncherTestUtils.getUniqueJobParametersBuilder() //테스트용 고유 JobParameters 생성
+                .addString("filePath", tempDir.toString())
+                .toJobParameters();
+
+
+        // When - 세뇌 배치 실행
+        JobExecution jobExecution = jobLauncherTestUtils.launchJob(jobParameters); //Job 실행
+
+
+        // Then - 배치 실행 결과 검증
+        assertThat(jobExecution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+        assertThat(jobExecution.getExitStatus()).isEqualTo(ExitStatus.COMPLETED);
+
+        Path expectedFile = Paths.get("src/test/resources/expected_brainwashed_victims.jsonl");
+        Path actualFile = tempDir.resolve("brainwashed_victims.jsonl");
+
+        List<String> expectedLines = Files.readAllLines(expectedFile);
+        List<String> actualLines = Files.readAllLines(actualFile);
+
+        Assertions.assertLinesMatch(expectedLines, actualLines);
+    }
+
+    private void insertTestStudents() {
+        TEST_STUDENTS.forEach(student ->
+                jdbcTemplate.update("INSERT INTO infearlearn_students (current_lecture, instructor, persuasion_method) VALUES (?, ?, ?)",
+                        student.getCurrentLecture(), student.getInstructor(), student.getPersuasionMethod())
+        );
+    }
+
+    @Test
+    @DisplayName("💀 세뇌 Step 실행 후 출력 파일 및 컨텍스트 검증")
+    void shouldExecuteBrainwashStepAndVerifyOutput() throws IOException {
+        // Given
+        insertTestStudents();
+        JobParameters jobParameters = jobLauncherTestUtils.getUniqueJobParametersBuilder()
+                .addString("filePath", tempDir.toString())
+                .toJobParameters();
+
+
+        // When
+        JobExecution jobExecution = jobLauncherTestUtils.launchStep("inFearLearnStudentsBrainWashStep", jobParameters); //Step 단위 실행
+
+
+        // Then
+        StepExecution stepExecution = jobExecution.getStepExecutions().iterator().next();
+        verifyStepExecution(stepExecution);
+        verifyExecutionContextPromotion(jobExecution);
+        verifyFileOutput(tempDir);
+    }
+
+    @Test
+    @DisplayName("💀 통계 Step 실행 후 성공률 계산 확인")
+    void shouldExecuteStatisticsStepAndCalculateSuccessRate() throws Exception {
+        // Given
+        ExecutionContext jobExecutionContext = new ExecutionContext();
+        jobExecutionContext.putLong("brainwashedVictimCount", TEST_STUDENTS.size() - 1);
+        jobExecutionContext.putLong("brainwashResistanceCount", 1L);
+
+
+        // When
+        JobExecution stepJobExecution = jobLauncherTestUtils.launchStep("brainwashStatisticsStep", jobExecutionContext); //Step 단위 실행
+
+
+        // Then
+        Collection<StepExecution> stepExecutions = stepJobExecution.getStepExecutions();
+        StepExecution stepExecution = stepExecutions.iterator().next();
+
+        assertThat(stepExecution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+
+        Double brainwashSuccessRate = ExecutionContextTestUtils.getValueFromStep(stepExecution, "brainwashSuccessRate");
+        assertThat(brainwashSuccessRate).isEqualTo(80.0);
+    }
+
+    private void verifyStepExecution(StepExecution stepExecution) {
+        assertThat(stepExecution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+        assertThat(stepExecution.getWriteCount()).isEqualTo(TEST_STUDENTS.size() - 1L); // 세뇌 성공자 4명
+        assertThat(stepExecution.getFilterCount()).isEqualTo(1L); // 세뇌 저항자 1명
+    }
+
+    private void verifyExecutionContextPromotion(JobExecution jobExecution) {
+        Long brainwashedVictimCount = ExecutionContextTestUtils.getValueFromJob(jobExecution, "brainwashedVictimCount");
+        Long brainwashResistanceCount = ExecutionContextTestUtils.getValueFromJob(jobExecution, "brainwashResistanceCount");
+
+        assertThat(brainwashedVictimCount).isEqualTo(TEST_STUDENTS.size() - 1);
+        assertThat(brainwashResistanceCount).isEqualTo(1L);
+    }
+
+    private void verifyFileOutput(Path actualPath) throws IOException {
+        Path expectedFile = Paths.get("src/test/resources/expected_brainwashed_victims.jsonl");
+        Path actualFile = actualPath.resolve("brainwashed_victims.jsonl");
+
+        List<String> expectedLines = Files.readAllLines(expectedFile);
+        List<String> actualLines = Files.readAllLines(actualFile);
+
+        Assertions.assertLinesMatch(expectedLines, actualLines);
+    }
+}
+```
+
+- [코드 예시](batch-system/src/test/java/com/system/batch/lesson/test/InFearLearnStudentsBrainWashJobTest.java)
+
+- `@SpringBatchTest`
+  - Spring Batch 테스트를 위한 핵심 애너테이션이다. 이 애너테이션을 사용하면 JobLauncherTestUtils와 같은 유틸리티 클래스들이 자동으로 구성되어 배치 잡을 쉽게 테스트할 수 있다. 자동으로 구성되는 컴포넌트는 아래와 같다.
+  - `JobLauncherTestUtils`: Job 실행 및 Step 개별 실행을 위한 유틸리티
+  - `JobRepositoryTestUtils`: Job 실행 이력 생성 및 정리 등 JobRepository 관련 유틸리티
+  - `StepScopeTestExecutionListener`: @StepScope 빈 테스트 지원
+  - `JobScopeTestExecutionListener`: @JobScope 빈 테스트 지원
+- `jobLauncherTestUtils.getUniqueJobParametersBuilder()`
+  - 내부적으로 `ramdom` 이라는 키로 랜덤 파라미터를 자동 생성하여 JobInstance 중복을 회피할 수 있다.
+  - 테스트 시점에 고유한 JobParameters를 생성하는 것은 매우 중요하다. 그렇지 않으면, 동일한 JobInstance에 대한 중복 실행으로 인해 `JobInstanceAlreadyCompleteException`이 발생할 수 있다. 이 메서드를 사용하면 매 테스트마다 고유한 JobParameters를 쉽게 생성할 수 있다.
+- `jobLauncherTestUtils.launchJob(jobParameters)`
+  - 실제 운영환경에서 배치를 실행하는 것과 동일한 방식으로 Job을 실행한다.
+  - JobParameters를 JobLauncher에 전달해 테스트 대상 Job을 시작하고, 실행 결과를 담은 JobExecution 객체를 반환받는다.
+- `jobLauncherTestUtils.launchStep()`
+  - Job 전체가 아닌, 특정 Step만 단위로 실행할 때 사용한다.
+  - Step 단위로 실행하면, 해당 Step의 로직과 리스너가 제대로 동작하는지 세밀하게 검증할 수 있다. 또한, StepExecution 객체를 통해 해당 Step의 상태, 처리된 아이템 수, 필터링된 아이템 수 등 상세한 실행 정보를 얻을 수 있다.
+  - 우리가 테스트하려는 Step만으로 구성된 테스트 전용 Job을 실행하게 된다.
+
+## 단위 테스트 - 개별 컴포넌트 테스트하기
+
+단위 테스트에서는 배치 잡의 개별 컴포넌트(예: ItemReader, ItemProcessor, ItemWriter, Tasklet 등)를 독립적으로 테스트하여, 각 컴포넌트가 예상대로 동작하는지 검증한다.
+
+이때 주의해야하는 것은 StepScope 또는 JobScope 빈을 테스트할 때, 해당 빈이 StepExecution 또는 JobExecution 컨텍스트에 의존하기 때문에, 이를 적절히 설정해주어야 한다는 점이다.
+
+Spring Batch Test 는 StepScopeTestUtils를 통해서, 각 테스트 메서드에서 필요할 때마다 커스텀 StepExecution을 생성할 수 있도록 지원한다.
+
+```java
+// 테스트 메서드 내에서 직접 커스텀 StepExecution 생성
+StepExecution stepExecution = MetaDataInstanceFactory.createStepExecution(jobParameters);
+
+
+// StepScopeTestUtils에 stepExecution 전달 (JobScopeTestUtils.doInJobScope()를 통해 JobExecution도 전달 가능)
+StepScopeTestUtils.doInStepScope(stepExecution, () -> {
+    // StepScope 빈 호출
+    return null;
+});
+```
+
+실제 테스트코드는 아래와 같다.
+
+```java
+@Autowired
+private FlatFileItemWriter<BrainwashedVictim> brainwashedVictimWriter;
+@TempDir
+private Path tempDir;
+
+@Test
+@DisplayName("💀 ItemWriter 단위 테스트 - 세뇌 대상 파일 출력 검증")
+void shouldWriteBrainwashedVictimsToFileCorrectly() throws Exception {
+    // Given
+    List<BrainwashedVictim> brainwashedVictims = createBrainwashedVictims();
+
+    JobParameters jobParameters = new JobParametersBuilder()
+            .addString("filePath", tempDir.toString()) // 이제 @TempDir 사용 가능
+            .addLong("random", new SecureRandom().nextLong())
+            .toJobParameters();
+    StepExecution stepExecution = MetaDataInstanceFactory.createStepExecution(jobParameters);
+
+
+    // When
+    // StepScopeTestUtils 활용
+    StepScopeTestUtils.doInStepScope(stepExecution, () -> {
+        // ItemStream의 open()과 close() 메서드는 Spring Batch Step이 자동으로 호출해준다. 그러나 여기서는 실제 Step을 실행하는 것이 아니기 때문에 우리가 직접 ItemStream의 메서드들을 호출해주어야 한다.
+        brainwashedVictimWriter.open(new ExecutionContext());
+        brainwashedVictimWriter.write(new Chunk<>(brainwashedVictims));
+        brainwashedVictimWriter.close();
+        return null;
+    });
+
+
+    // Then
+    verifyFileOutput();
+}
+
+// StepScopeTestUtils 사용으로 @TempDir 직접 접근 가능, 더 이상 Path 파라미터 불필요
+private void verifyFileOutput() throws IOException {
+    Path expectedFile = Paths.get("src/test/resources/expected_brainwashed_victims.jsonl");
+    Path actualFile = tempDir.resolve("brainwashed_victims.jsonl");
+
+    List<String> expectedLines = Files.readAllLines(expectedFile);
+    List<String> actualLines = Files.readAllLines(actualFile);
+
+    Assertions.assertLinesMatch(expectedLines, actualLines);
+}
+
+private List<BrainwashedVictim> createBrainwashedVictims() {
+    return List.of(
+            BrainwashedVictim.builder()
+                    .victimId(1L)
+                    .originalLecture("스프링 핵심 원*")
+                    .originalInstructor("세계관 최강자")
+                    .brainwashMessage("무지를 살해하라... 배치의 세계가 기다린다 💀")
+                    .newMaster("KILL-9")
+                    .conversionMethod("MURDER_YOUR_IGNORANCE")
+                    .brainwashStatus("MIND_CONTROLLED")
+                    .nextAction("ENROLL_KILL9_BATCH_COURSE")
+                    .build(),
+            BrainwashedVictim.builder()
+                    .victimId(2L)
+                    .originalLecture("고성* JPA & Hibernate")
+                    .originalInstructor("자바계의 독재자")
+                    .brainwashMessage("한계를 도살하라... 대용량 데이터를 정복하라 💀")
+                    .newMaster("KILL-9")
+                    .conversionMethod("SLAUGHTER_YOUR_LIMITS")
+                    .brainwashStatus("MIND_CONTROLLED")
+                    .nextAction("ENROLL_KILL9_BATCH_COURSE")
+                    .build(),
+            BrainwashedVictim.builder()
+                    .victimId(3L)
+                    .originalLecture("토*의 스프링 부트")
+                    .originalInstructor("원조 처형자")
+                    .brainwashMessage("잠재력을 처형하라... 대용량 처리의 세계로 💀")
+                    .newMaster("KILL-9")
+                    .conversionMethod("EXECUTE_YOUR_POTENTIAL")
+                    .brainwashStatus("MIND_CONTROLLED")
+                    .nextAction("ENROLL_KILL9_BATCH_COURSE")
+                    .build(),
+            BrainwashedVictim.builder()
+                    .victimId(4L)
+                    .originalLecture("스프링 시큐리티 완전 정*")
+                    .originalInstructor("무결점 학살자")
+                    .brainwashMessage("변명을 종료하라... 지금 당장 배치를 배워라 💀")
+                    .newMaster("KILL-9")
+                    .conversionMethod("TERMINATE_YOUR_EXCUSES")
+                    .brainwashStatus("MIND_CONTROLLED")
+                    .nextAction("ENROLL_KILL9_BATCH_COURSE")
+                    .build()
+    );
+}
+```
+
