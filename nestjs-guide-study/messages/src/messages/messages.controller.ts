@@ -1,18 +1,11 @@
-import { Controller, Get, Post, Body, Param, NotFoundException } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, NotFoundException, Injectable } from '@nestjs/common';
 import { CreateMessageDto } from './dtos/create-message.dto';
 import { MessagesService } from './messages.service';
 
+// @Injectable() //DI 컨테이너에 등록하지 않아도 된다. 어차피 컨트롤러는 다른 컴포넌트에 의해 소비되진 않기 때문이다. 컨트롤러 인스턴스는 NestJS에 의해 자동 생성된다.
 @Controller('messages')
 export class MessagesController {
-  messagesService: MessagesService;
-
-  /**
-   * TODO - Refactoring
-   * 의존성 주입을 사용하지 않고 명시적으로 생성. 실제론 NestJS에서 제공되는 의존성 주입 기능을 사용한다. 즉 아래 코드는 임시 코드이다.
-   */
-  constructor() {
-    this.messagesService = new MessagesService();
-  }
+  constructor(public messagesService: MessagesService) {}
 
   @Get()
   listMessages() {
