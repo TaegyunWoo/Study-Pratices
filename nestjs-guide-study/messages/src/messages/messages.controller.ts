@@ -1,10 +1,23 @@
 import { Controller, Get, Post, Body, Param } from '@nestjs/common';
 import { CreateMessageDto } from './dtos/create-message.dto';
+import { MessagesService } from './messages.service';
 
 @Controller('messages')
 export class MessagesController {
+  messagesService: MessagesService;
+
+  /**
+   * TODO - Refactoring
+   * 의존성 주입을 사용하지 않고 명시적으로 생성. 실제론 NestJS에서 제공되는 의존성 주입 기능을 사용한다. 즉 아래 코드는 임시 코드이다.
+   */
+  constructor() {
+    this.messagesService = new MessagesService();
+  }
+
   @Get()
-  listMessages() {}
+  listMessages() {
+    return this.messagesService.findAll();
+  }
 
   /**
    * [MARK]
@@ -26,11 +39,11 @@ export class MessagesController {
    */
   @Post()
   createMessage(@Body() body: CreateMessageDto) {
-    console.log(body);
+    return this.messagesService.create(body.content);
   }
 
   @Get('/:id')
   getMessage(@Param('id') id: string) {
-    console.log(id);
+    return this.messagesService.findOne(id);
   }
 }
