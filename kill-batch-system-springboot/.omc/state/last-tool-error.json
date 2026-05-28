@@ -1,0 +1,7 @@
+{
+  "tool_name": "Read",
+  "tool_input_preview": "{\"file_path\":\"/Users/jay/Workspace/study/Study-Pratices/kill-batch-system-springboot/README.md\"}",
+  "error": "File content (333.1KB) exceeds maximum allowed size (256KB). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.",
+  "timestamp": "2026-03-23T07:44:17.360Z",
+  "retry_count": 1
+}

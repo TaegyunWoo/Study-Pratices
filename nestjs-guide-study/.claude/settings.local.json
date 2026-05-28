@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /Users/jay/Workspace/study/Study-Pratices ls-files --error-unmatch nestjs-guide-study)",
+      "Bash(git -C /Users/jay/Workspace/study/Study-Pratices ls-files nestjs-guide-study/)",
+      "Bash(git *)"
+    ]
+  }
+}

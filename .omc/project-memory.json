@@ -1,0 +1,248 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1779930027558,
+  "projectRoot": "/Users/jay/Workspace/study/Study-Pratices",
+  "techStack": {
+    "languages": [],
+    "frameworks": [],
+    "packageManager": null,
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [],
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "Algorithm-Study": {
+      "path": "Algorithm-Study",
+      "purpose": null,
+      "fileCount": 6,
+      "lastAccessed": 1779930027547,
+      "keyFiles": [
+        "README.md",
+        "build.gradle",
+        "gradlew",
+        "gradlew.bat",
+        "settings.gradle"
+      ]
+    },
+    "Annotation-Processor": {
+      "path": "Annotation-Processor",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1779930027548,
+      "keyFiles": []
+    },
+    "DDD": {
+      "path": "DDD",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1779930027548,
+      "keyFiles": []
+    },
+    "JS": {
+      "path": "JS",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1779930027548,
+      "keyFiles": []
+    },
+    "Kafka": {
+      "path": "Kafka",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1779930027548,
+      "keyFiles": []
+    },
+    "KakaoTalk_CloneCoding-FrontEnd": {
+      "path": "KakaoTalk_CloneCoding-FrontEnd",
+      "purpose": null,
+      "fileCount": 5,
+      "lastAccessed": 1779930027548,
+      "keyFiles": [
+        "LockedPage.html",
+        "LockedPageJS.js",
+        "LockedPageStyle.css",
+        "README.md",
+        "userInfo.json"
+      ]
+    },
+    "Kotlin-Study": {
+      "path": "Kotlin-Study",
+      "purpose": null,
+      "fileCount": 6,
+      "lastAccessed": 1779930027548,
+      "keyFiles": [
+        "build.gradle",
+        "gradle.properties",
+        "gradlew",
+        "gradlew.bat",
+        "settings.gradle"
+      ]
+    },
+    "React": {
+      "path": "React",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1779930027548,
+      "keyFiles": []
+    },
+    "Reactive-Streams": {
+      "path": "Reactive-Streams",
+      "purpose": null,
+      "fileCount": 5,
+      "lastAccessed": 1779930027548,
+      "keyFiles": [
+        "gradlew",
+        "gradlew.bat",
+        "settings.gradle"
+      ]
+    },
+    "Spring": {
+      "path": "Spring",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1779930027548,
+      "keyFiles": []
+    },
+    "TS": {
+      "path": "TS",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1779930027548,
+      "keyFiles": []
+    },
+    "cdc-with-workflow": {
+      "path": "cdc-with-workflow",
+      "purpose": null,
+      "fileCount": 7,
+      "lastAccessed": 1779930027549,
+      "keyFiles": [
+        "build.gradle.kts",
+        "docker-compose.yml",
+        "gradle.properties",
+        "gradlew",
+        "gradlew.bat"
+      ]
+    },
+    "kill-batch-system-raw": {
+      "path": "kill-batch-system-raw",
+      "purpose": null,
+      "fileCount": 7,
+      "lastAccessed": 1779930027549,
+      "keyFiles": [
+        "build.gradle",
+        "gradle.properties",
+        "gradlew",
+        "gradlew.bat",
+        "settings.gradle"
+      ]
+    },
+    "kill-batch-system-springboot": {
+      "path": "kill-batch-system-springboot",
+      "purpose": null,
+      "fileCount": 19,
+      "lastAccessed": 1779930027549,
+      "keyFiles": [
+        "HELP.md",
+        "README.md",
+        "array_system_death.json",
+        "build.gradle",
+        "critical-failures.csv"
+      ]
+    },
+    "nestjs-guide-study": {
+      "path": "nestjs-guide-study",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1779930027549,
+      "keyFiles": []
+    },
+    "spring-reactive-web": {
+      "path": "spring-reactive-web",
+      "purpose": null,
+      "fileCount": 2,
+      "lastAccessed": 1779930027549,
+      "keyFiles": [
+        "README.md"
+      ]
+    },
+    "tobyspring": {
+      "path": "tobyspring",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1779930027549,
+      "keyFiles": []
+    },
+    "Algorithm-Study/src": {
+      "path": "Algorithm-Study/src",
+      "purpose": "Source code",
+      "fileCount": 0,
+      "lastAccessed": 1779930027549,
+      "keyFiles": []
+    },
+    "Reactive-Streams/app": {
+      "path": "Reactive-Streams/app",
+      "purpose": "Application code",
+      "fileCount": 1,
+      "lastAccessed": 1779930027549,
+      "keyFiles": [
+        "build.gradle"
+      ]
+    },
+    "TS/Types": {
+      "path": "TS/Types",
+      "purpose": "Type definitions",
+      "fileCount": 2,
+      "lastAccessed": 1779930027550,
+      "keyFiles": [
+        "package.json",
+        "tsconfig.json"
+      ]
+    },
+    "cdc-with-workflow/build": {
+      "path": "cdc-with-workflow/build",
+      "purpose": "Build output",
+      "fileCount": 0,
+      "lastAccessed": 1779930027550,
+      "keyFiles": []
+    },
+    "kill-batch-system-raw/app": {
+      "path": "kill-batch-system-raw/app",
+      "purpose": "Application code",
+      "fileCount": 1,
+      "lastAccessed": 1779930027550,
+      "keyFiles": [
+        "build.gradle"
+      ]
+    },
+    "kill-batch-system-raw/build": {
+      "path": "kill-batch-system-raw/build",
+      "purpose": "Build output",
+      "fileCount": 0,
+      "lastAccessed": 1779930027550,
+      "keyFiles": []
+    }
+  },
+  "hotPaths": [],
+  "userDirectives": []
+}
