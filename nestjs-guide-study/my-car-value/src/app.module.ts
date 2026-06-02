@@ -13,7 +13,7 @@ import { Report } from './reports/report.entity';
       type: 'better-sqlite3', //DB 종류
       database: 'db.sqlite', //DB 명
       entities: [User, Report], // User, Report 엔티티 설정
-      synchronize: true,
+      synchronize: true, // DDL 자동 실행
     }),
     UsersModule,
     ReportsModule
