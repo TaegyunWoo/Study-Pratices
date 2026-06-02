@@ -3,6 +3,24 @@ POST http://localhost:3001/auth/signup
 content-type: application/json
 
 {
-  "email": "test@example.com",
+  "email": "test2@example.com",
   "password": "password"
+}
+
+### Find a particular user
+GET http://localhost:3001/auth/3
+
+### Find all users
+GET http://localhost:3001/auth?email=test2@example.com
+
+### Remove a user given id
+DELETE http://localhost:3001/auth/2
+
+### Update a user
+PATCH http://localhost:3001/auth/3
+Content-Type: application/json
+
+{
+  "email": "test333333@example.com",
+  "password": "password!!!!!!"
 }
