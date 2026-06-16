@@ -14,7 +14,7 @@ GET http://localhost:3001/auth/3
 GET http://localhost:3001/auth?email=test2@example.com
 
 ### Remove a user given id
-DELETE http://localhost:3001/auth/2
+DELETE http://localhost:3001/auth/124214214
 
 ### Update a user
 PATCH http://localhost:3001/auth/3
